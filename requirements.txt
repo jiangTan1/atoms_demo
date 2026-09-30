@@ -1,0 +1,16 @@
+# 运行环境要求：Python >= 3.10（本机建议 py -3.12）
+
+# Agent 框架（extensions extra 提供 LiteLLM 支持）
+google-adk[extensions]==2.10.0
+litellm>=1.84
+
+# Web 服务
+fastapi>=0.115
+uvicorn[standard]>=0.30
+
+# 配置与数据模型
+python-dotenv>=1.0
+pydantic>=2.7
+
+# 测试
+pytest>=8.0

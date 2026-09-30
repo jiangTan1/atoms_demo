@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>代码辅助智能体</title>
+  <link rel="stylesheet" href="/styles.css" />
+  <link rel="stylesheet"
+        href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css" />
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.2/marked.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.1.6/purify.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+</head>
+<body>
+  <div class="app">
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-title">代码辅助智能体</span>
+        <span class="brand-sub">代码生成 · 代码解释 · 重构优化 · 缺陷排查</span>
+      </div>
+      <div class="controls">
+        <label class="field">
+          <span>目标语言</span>
+          <select id="language">
+            <option value="">自动推断</option>
+            <option value="java">Java</option>
+            <option value="python">Python</option>
+            <option value="csharp">C#</option>
+            <option value="cpp">C++</option>
+            <option value="html">HTML</option>
+            <option value="javascript">JavaScript</option>
+          </select>
+        </label>
+        <button id="history-toggle" type="button" class="ghost"
+                aria-expanded="false" aria-controls="history-panel">历史会话</button>
+        <button id="new-session" type="button" class="ghost">新建会话</button>
+      </div>
+
+      <div id="history-panel" class="history-panel" hidden>
+        <div class="history-head">
+          <span>历史会话</span>
+          <button id="history-refresh" type="button" class="code-copy">刷新</button>
+        </div>
+        <div id="history-list" class="history-list"></div>
+      </div>
+    </header>
+
+    <main id="messages" class="messages" aria-live="polite">
+      <div class="empty" id="empty-hint">
+        <p>描述你要实现的功能、粘贴一段待解释或待重构的代码、或贴上代码让助手排查问题。</p>
+        <p class="hint">示例：用 Java 写一个线程安全的单例；解释这段 Python 的装饰器；这段 C# 代码有什么 bug。</p>
+      </div>
+    </main>
+
+    <footer class="composer">
+      <textarea id="input" rows="3" placeholder="输入问题，Ctrl + Enter 发送"></textarea>
+      <div class="composer-actions">
+        <span id="status" class="status"></span>
+        <button id="send" type="button" class="primary">发送</button>
+      </div>
+    </footer>
+  </div>
+
+  <script src="/app.js"></script>
+</body>
+</html>
