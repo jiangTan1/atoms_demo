@@ -10,8 +10,19 @@ const LANG_LABELS = {
 };
 const MAX_LANG_LABEL_LEN = 12;
 
+// 「另存为」按语言决定扩展名，未标注语言时统一存为 .txt（见 design.md 决策 7）
+const LANG_EXTENSIONS = {
+  java: 'java',
+  python: 'py',
+  csharp: 'cs',
+  cpp: 'cpp',
+  html: 'html',
+  javascript: 'js',
+};
+
 // 记住当前会话，刷新页面后据此自动恢复历史
 const SESSION_STORAGE_KEY = 'code-assistant.session_id';
+const SESSION_ID_PLACEHOLDER = '新会话（尚未创建）';
 
 const els = {
   messages: document.getElementById('messages'),
@@ -24,6 +35,7 @@ const els = {
   historyList: document.getElementById('history-list'),
   historyRefresh: document.getElementById('history-refresh'),
   status: document.getElementById('status'),
+  sessionId: document.getElementById('session-id'),
 };
 
 let sessionId = null;
@@ -36,6 +48,12 @@ if (window.marked) {
 
 function setStatus(text) {
   els.status.textContent = text || '';
+}
+
+/** 顶栏展示当前会话 ID，方便排查问题；无会话时显示占位文案。 */
+function renderSessionId() {
+  els.sessionId.textContent = sessionId || SESSION_ID_PLACEHOLDER;
+  els.sessionId.title = sessionId ? `当前会话 ID：${sessionId}` : '当前还没有会话 ID';
 }
 
 function removeEmptyHint() {
@@ -126,7 +144,28 @@ function detectLanguage(codeEl) {
   return raw.slice(0, MAX_LANG_LABEL_LEN);
 }
 
+/** 同一次渲染内出现同名文件时追加序号，避免重复下载覆盖。 */
+function uniqueFileName(base, ext, used) {
+  const count = (used.get(ext) || 0) + 1;
+  used.set(ext, count);
+  return count === 1 ? `${base}.${ext}` : `${base}-${count}.${ext}`;
+}
+
+function saveAsFile(text, filename) {
+  const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 0);
+}
+
 function enhanceCodeBlocks(root) {
+  const usedNames = new Map();
+
   root.querySelectorAll('pre > code').forEach((codeEl) => {
     if (codeEl.closest('.code-block')) return;
 
@@ -163,7 +202,25 @@ function enhanceCodeBlocks(root) {
       }, 1500);
     });
 
-    head.append(label, copyBtn);
+    const fileName = uniqueFileName('snippet', LANG_EXTENSIONS[language] || 'txt', usedNames);
+    const saveBtn = document.createElement('button');
+    saveBtn.type = 'button';
+    saveBtn.className = 'code-copy';
+    saveBtn.textContent = '另存为';
+    saveBtn.title = `保存为 ${fileName}`;
+    saveBtn.addEventListener('click', () => {
+      saveAsFile(source, fileName);
+      saveBtn.textContent = '已保存';
+      setTimeout(() => {
+        saveBtn.textContent = '另存为';
+      }, 1500);
+    });
+
+    const tools = document.createElement('span');
+    tools.className = 'code-tools';
+    tools.append(copyBtn, saveBtn);
+
+    head.append(label, tools);
 
     const pre = codeEl.parentElement;
     pre.replaceWith(block);
@@ -299,6 +356,7 @@ async function send() {
     if (!raw) {
       showError(contentEl, '本轮没有收到任何内容，请重试。');
     }
+    renderSessionId();
     if (sessionId) {
       rememberSession(sessionId);
       await refreshHistoryList();
@@ -347,6 +405,7 @@ function startNewSession() {
   forgetStoredSession();
   els.input.value = '';
   setStatus('已新建会话');
+  renderSessionId();
   highlightActiveSession();
   els.input.focus();
 }
@@ -461,6 +520,7 @@ async function switchSession(id) {
       setStatus('历史会话载入失败，请稍后重试');
       return;
     }
+    renderSessionId();
   }
   toggleHistory(false);
   await refreshHistoryList();
@@ -483,6 +543,7 @@ async function bootstrap() {
       forgetStoredSession();
     }
   }
+  renderSessionId();
   await refreshHistoryList();
 }
 
