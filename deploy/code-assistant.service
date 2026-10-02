@@ -1,0 +1,34 @@
+# 代码辅助智能体：systemd 单元样例（单机部署，适用于阿里云 ECS）
+#
+# 放置位置：/etc/systemd/system/code-assistant.service
+# 启用：sudo systemctl daemon-reload && sudo systemctl enable --now code-assistant
+# 日志：journalctl -u code-assistant -f
+#
+# 启用前需要按实际部署替换：User / Group / WorkingDirectory 以及 ExecStart 里的项目路径。
+
+[Unit]
+Description=代码辅助智能体（FastAPI + Google ADK）
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=www-data
+Group=www-data
+WorkingDirectory=/opt/atoms-demo
+
+# LiteLLM 会联网拉取模型价格表，网络受限时每次启动都要重试数秒，这里直接用内置表
+# （run.py 里也设了同样的变量，但生产不用 run.py，所以要在单元里补上）
+Environment=LITELLM_LOCAL_MODEL_COST_MAP=True
+Environment=PYTHONUTF8=1
+
+# 必须单进程：RunnerService 在进程内持有 SqliteSessionService，
+# 多 worker 会并发写同一个 data/sessions.db（见 app/services/runner.py）。
+# 只监听 127.0.0.1，公网访问统一走 Nginx（见 deploy/nginx.conf）。
+ExecStart=/opt/atoms-demo/.venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 1
+
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

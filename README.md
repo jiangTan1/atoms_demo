@@ -84,6 +84,69 @@ SSE 帧协议（仅 `data:` 行，JSON 载荷）：
 
 覆盖配置校验（完整配置 / 缺 `LLM_API_KEY` / `base_url` 缺版本路径 / 端口非法）、事件帧转换（增量文本 / 最终完整帧 / 异常与错误事件归类）、历史还原（多轮消息顺序与角色、跳过流式中间态与错误事件、不泄漏模型推理），以及本次新增的追问轮次推导、澄清标记剥离与内部前缀还原（覆盖标记被切片、首字符为 `[` 的普通回复、整段一次性返回、中间插入实质回答后计数归零等情形）。
 
+## 部署到云服务器（阿里云 ECS 示例）
+
+单机部署：Nginx 反向代理 + systemd 托管 uvicorn。示例配置在 `deploy/` 下，文件顶部都标注了需要替换的占位符。
+
+### 1. 选型
+
+- **操作系统建议 Ubuntu 24.04 LTS 64 位（x86_64）**：自带 Python 3.12，与本机验证环境一致。Alibaba Cloud Linux 3 也可以用，但其默认 `python3` 是 3.6，需要自行安装 3.12。
+- 规格建议 2 vCPU / 4 GB 起。不跑本地模型，但 1C2G 在安装依赖、生成首个回复时会比较吃力。
+
+### 2. 准备运行环境
+
+```bash
+sudo apt update && sudo apt install -y python3.12-venv nginx
+sudo mkdir -p /opt/atoms-demo && sudo chown "$USER" /opt/atoms-demo
+
+git clone <你的仓库地址> /opt/atoms-demo
+cd /opt/atoms-demo
+python3.12 -m venv .venv
+.venv/bin/python -m pip install -r requirements.txt
+
+cp .env.example .env
+```
+
+编辑 `.env`，至少要把 `LLM_API_KEY` 换成真实凭据。`data/sessions.db` 首次启动时自动生成，不需要从本地拷贝。
+
+### 3. 交给 systemd 托管
+
+```bash
+sudo cp deploy/code-assistant.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now code-assistant
+systemctl status code-assistant
+journalctl -u code-assistant -f
+```
+
+服务以 `www-data` 运行，需要能读到 `.env`、能写会话库：
+
+```bash
+cd /opt/atoms-demo
+sudo chown www-data:www-data .env && sudo chmod 600 .env
+sudo install -d -o www-data -g www-data data
+```
+
+应用只监听 `127.0.0.1:8000`，不直接对外，公网访问统一走 Nginx。
+
+### 4. 反向代理与 HTTPS
+
+```bash
+sudo cp deploy/nginx.conf /etc/nginx/conf.d/code-assistant.conf
+sudo nano /etc/nginx/conf.d/code-assistant.conf   # 替换 server_name 与证书路径
+sudo nginx -t && sudo systemctl reload nginx
+```
+
+样例里有两项是流式回复必需的：`proxy_buffering off`（不关掉的话回复会被攒完再一次性吐出，页面上没有打字机效果）和 `proxy_read_timeout 300s`（默认 60s 在长代码场景下会被提前切断）。同时对没有鉴权的 `/api/chat` 按来源 IP 限流（20 次/分钟、突发 3 次）。
+
+### 5. 上线前检查
+
+- 安全组只放行 22 / 80 / 443，**不要开放 8000**。
+- 大陆地域用域名走 80/443 需要完成 ICP 备案；未备案可选香港或海外地域。
+- 确认 ECS 能出网访问 `.env` 里 `LLM_BASE_URL` 指向的域名。
+- 服务没有任何鉴权，任何拿到地址的人都能消耗模型额度。样例里的限流只是第一道防线，正式对外开放前建议再加访问口令。
+- 会话落在单机 SQLite 上，不要在多台 ECS 上跑同一份 `data/`。
+
 ## 目录结构
 
 ```text
@@ -97,8 +160,9 @@ app/
 prompts/system.md     系统提示词
 web/                  index.html / styles.css / app.js
 tests/                单元测试
+deploy/               nginx.conf / code-assistant.service（部署样例，见「部署到云服务器」）
 data/sessions.db      会话落盘文件（首次启动时生成，已被 .gitignore 忽略）
-run.py                启动脚本
+run.py                启动脚本（本地开发用，带热重载）
 ```
 
 ## 已知限制
@@ -107,8 +171,8 @@ run.py                启动脚本
 - 未标注语言的代码块只做等宽展示，不做语法高亮猜测。
 - 会话默认落盘到 `data/sessions.db`；由 `memory` 切到 `sqlite` 后，此前只存在于内存中的会话不会迁移。历史列表为逐会话读取（标题与消息数需按会话取出事件推导），故按最近更新倒序并限制 50 条。
 - 「历史会话」面板只支持浏览与切换，暂不支持重命名、删除与搜索。
-- LiteLLM 会尝试联网拉取模型价格表，网络受限时已在 `run.py` 中改用内置表（`LITELLM_LOCAL_MODEL_COST_MAP=True`）。
-- 无鉴权、无多租户与限流，仅用于本地演示；不要把服务直接暴露到公网。
+- LiteLLM 会尝试联网拉取模型价格表，网络受限时已在 `run.py` 与 `deploy/code-assistant.service` 中改用内置表（`LITELLM_LOCAL_MODEL_COST_MAP=True`）。
+- 无鉴权、无多租户。仅用于演示：不要把 uvicorn 直接暴露到公网；`deploy/nginx.conf` 提供了按来源 IP 的限流，但正式对外开放前建议再加访问口令。
 - 免费模型 `glm-4.5-flash` 偶发以英文作答；模型推理（thought）已在服务端过滤，不会出现在回答或历史记录中。
 - 澄清追问依赖模型按提示词约定在回复第一行输出内部控制标记 `[[CLARIFY]]`。若模型未输出，该轮不计入追问次数、上限不会推进；若模型在正常回答里误输出该标记，该轮可能被误计为一次追问。标记本身始终不会展示给使用者（流式切片也会被剥离）。
 - 达到追问上限那一轮的回复由服务端直接生成，并用会话服务补写进会话；若补写失败会退化为该轮不入库，此时刷新页面看不到最后一轮，但不影响刚收到的回复内容。
