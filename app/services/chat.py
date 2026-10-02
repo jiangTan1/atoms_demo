@@ -128,11 +128,11 @@ def count_clarify_rounds(session) -> int:
 def strip_clarify_marker(text: str) -> str:
     """去掉助手回复开头的澄清标记，标记对使用者始终不可见。
 
-    text 需为已去除首尾空白的文本；标记独占第一行，剥离后顺带吃掉其后的换行。
+    text 需为已去除首尾空白的文本；标记独占第一行，剥离后顺带吃掉其后的空白。
     """
     if not text.startswith(CLARIFY_MARKER):
         return text
-    return text[len(CLARIFY_MARKER) :].lstrip("\n")
+    return text[len(CLARIFY_MARKER) :].lstrip()
 
 
 def events_to_messages(session) -> list[dict]:

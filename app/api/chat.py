@@ -43,6 +43,9 @@ async def chat(request: Request, payload: ChatRequest) -> StreamingResponse:
 
     # 追问轮次由服务端从会话事件推导，不依赖模型自己计数（见 design.md 决策 4）
     clarify_rounds = chat_service.count_clarify_rounds(session)
+    message = chat_service.compose_user_message(
+        payload.message, payload.target_language, clarify_rounds
+    )
 
     if clarify_rounds >= chat_service.MAX_CLARIFY_ROUNDS:
         # 已达追问上限：不再请求模型，直接返回固定结束语（见 design.md 决策 6）
@@ -50,9 +53,10 @@ async def chat(request: Request, payload: ChatRequest) -> StreamingResponse:
             "code_assistant", chat_service.CLARIFY_ROUND_LIMIT_MESSAGE
         )
         try:
-            # 补写该轮的用户消息与结束语，保证刷新后历史与刚才所见一致
+            # 补写该轮的用户消息与结束语（用户消息与其他轮次一致，写入注入前缀后的文本），
+            # 保证刷新后历史与刚才所见一致
             await session_service.append_event(
-                session, chat_service.build_event("user", payload.message)
+                session, chat_service.build_event("user", message)
             )
             await session_service.append_event(session, limit_event)
         except Exception:  # noqa: BLE001 - 落盘失败时退化为不入库，回复本身仍照常返回
@@ -65,10 +69,6 @@ async def chat(request: Request, payload: ChatRequest) -> StreamingResponse:
         return StreamingResponse(
             limit_stream(), media_type="text/event-stream", headers=SSE_HEADERS
         )
-
-    message = chat_service.compose_user_message(
-        payload.message, payload.target_language, clarify_rounds
-    )
 
     async def event_stream():
         async for frame in chat_service.stream_frames(
