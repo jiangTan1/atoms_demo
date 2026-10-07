@@ -1,7 +1,8 @@
 """对话接口的单元测试。
 
 覆盖轮次注入与追问达到上限时的短路行为（见 design.md 决策 5、6），
-用一个假 Runner 替代真实模型，确认上限轮不再请求模型、正常轮次会被注入轮次前缀。
+用一个假 Runner 替代真实模型，确认上限轮不再请求模型、正常轮次会被注入轮次前缀，
+以及会话归属取自登录态并带 `user:` 前缀（见本次变更的 specs/access-control/spec.md）。
 """
 
 from __future__ import annotations
@@ -13,6 +14,13 @@ from types import SimpleNamespace
 from app.api import chat as api_chat
 from app.schemas import ChatRequest
 from app.services.chat import CLARIFY_MARKER, CLARIFY_ROUND_LIMIT_MESSAGE
+
+
+def make_user(username="alice"):
+    """直连路由函数时替代鉴权依赖的当前身份。"""
+    return SimpleNamespace(
+        username=username, role="user", token="t-1", session_user_id=f"user:{username}"
+    )
 
 
 def make_history_event(author: str, text: str):
@@ -88,7 +96,7 @@ def run_chat(monkeypatch, *, session, runner, session_service, message="随便�
             message=message, session_id="s-1", target_language=language
         )
         response = await api_chat.chat(
-            make_request(runner, session_service), payload
+            make_request(runner, session_service), payload, make_user()
         )
         return await collect_frames(response)
 
@@ -113,6 +121,22 @@ def test_normal_turn_injects_clarify_round_prefix(monkeypatch):
     sent = runner.kwargs["new_message"].parts[0].text
     assert sent == "[目标语言：Java]\n[澄清轮次：1/5]\n\nJava"
     assert frames[-1]["type"] == "done"
+
+
+def test_chat_uses_the_logged_in_identity(monkeypatch):
+    """归属者取自登录态并加 user: 前缀，客户端不再参与指定。"""
+    session = SimpleNamespace(id="s-1", events=[])
+    runner = ScriptedRunner([SimpleNamespace(content=None, partial=False, id="evt-1")])
+
+    run_chat(
+        monkeypatch,
+        session=session,
+        runner=runner,
+        session_service=FakeSessionService(),
+        message="写个单例",
+    )
+
+    assert runner.kwargs["user_id"] == "user:alice"
 
 
 def test_chat_short_circuits_when_clarify_limit_reached(monkeypatch):

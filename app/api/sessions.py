@@ -1,14 +1,15 @@
 """会话接口。
 
 提供会话新建、历史会话列表与历史消息读取，返回可供后续对话复用的 session_id。
+四个路由都要求登录，会话归属一律取自登录态（见 specs/session-history/spec.md）。
 """
 
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 
+from app.api.auth import CurrentUser, current_user
 from app.schemas import (
-    DEFAULT_USER_ID,
     HistoryMessage,
     SessionCreateRequest,
     SessionListResponse,
@@ -38,9 +39,13 @@ def _title_from(messages: list[dict]) -> str:
 
 
 @router.post("/sessions", response_model=SessionResponse)
-async def new_session(request: Request, payload: SessionCreateRequest | None = None) -> SessionResponse:
+async def new_session(
+    request: Request,
+    user: CurrentUser = Depends(current_user),
+    payload: SessionCreateRequest | None = None,
+) -> SessionResponse:
     """新建会话，返回的 session_id 可直接在 POST /api/chat 中复用。"""
-    user_id = payload.user_id if payload else DEFAULT_USER_ID
+    user_id = user.session_user_id
     session = await create_session(request.app.state.session_service, user_id=user_id)
     return SessionResponse(session_id=session.id, user_id=user_id)
 
@@ -48,9 +53,10 @@ async def new_session(request: Request, payload: SessionCreateRequest | None = N
 @router.get("/sessions", response_model=SessionListResponse)
 async def read_sessions(
     request: Request,
-    user_id: str = DEFAULT_USER_ID,
+    user: CurrentUser = Depends(current_user),
 ) -> SessionListResponse:
-    """历史会话列表，按最近更新时间倒序返回。"""
+    """历史会话列表，按最近更新时间倒序返回；只含当前登录用户的会话。"""
+    user_id = user.session_user_id
     service = request.app.state.session_service
     sessions = await list_sessions(service, user_id=user_id, limit=HISTORY_LIMIT)
 
@@ -73,9 +79,10 @@ async def read_sessions(
 async def read_session_messages(
     session_id: str,
     request: Request,
-    user_id: str = DEFAULT_USER_ID,
+    user: CurrentUser = Depends(current_user),
 ) -> SessionMessagesResponse:
-    """读取某会话的历史消息，按发生顺序返回。"""
+    """读取某会话的历史消息，按发生顺序返回；他人会话按不存在处理。"""
+    user_id = user.session_user_id
     session = await get_session(
         request.app.state.session_service, user_id=user_id, session_id=session_id
     )
@@ -92,9 +99,10 @@ async def read_session_messages(
 async def read_session(
     session_id: str,
     request: Request,
-    user_id: str = DEFAULT_USER_ID,
+    user: CurrentUser = Depends(current_user),
 ) -> SessionResponse:
-    """查询会话是否存在。"""
+    """查询会话是否存在；他人会话按不存在处理。"""
+    user_id = user.session_user_id
     session = await get_session(
         request.app.state.session_service, user_id=user_id, session_id=session_id
     )

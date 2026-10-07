@@ -13,10 +13,12 @@ from pathlib import Path
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
+from app.api import auth as auth_api
 from app.api import chat as chat_api
 from app.api import sessions as sessions_api
 from app.api import workspace as workspace_api
 from app.config import Settings, get_settings
+from app.services.accounts import AccountService
 from app.services.runner import RunnerService
 
 WEB_DIR = Path(__file__).resolve().parent.parent / "web"
@@ -24,8 +26,14 @@ WEB_DIR = Path(__file__).resolve().parent.parent / "web"
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """启动时装配配置与 Runner，关闭时释放。配置缺失会在这里直接抛错。"""
+    """启动时装配配置、账号服务与 Runner，关闭时释放。配置缺失会在这里直接抛错。"""
     settings: Settings = app.state.settings
+
+    # 账号库独立于会话库，随应用启动初始化；表为空时创建默认管理员 root/root
+    accounts = AccountService()
+    accounts.ensure_default_admin()
+    app.state.accounts = accounts
+
     service = RunnerService(settings)
     app.state.session_service = service.session_service
     app.state.runner = service.runner
@@ -37,6 +45,7 @@ def create_app() -> FastAPI:
     app = FastAPI(title="代码辅助智能体", lifespan=lifespan)
     app.state.settings = get_settings()
 
+    app.include_router(auth_api.router)
     app.include_router(sessions_api.router)
     app.include_router(chat_api.router)
     app.include_router(workspace_api.router)

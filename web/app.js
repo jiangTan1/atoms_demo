@@ -25,6 +25,28 @@ const SESSION_STORAGE_KEY = 'code-assistant.session_id';
 const SESSION_ID_PLACEHOLDER = '新会话（尚未创建）';
 
 const els = {
+  authApp: document.getElementById('auth-app'),
+  chatApp: document.getElementById('chat-app'),
+  authForm: document.getElementById('auth-form'),
+  authModeLogin: document.getElementById('auth-mode-login'),
+  authModeRegister: document.getElementById('auth-mode-register'),
+  authModePassword: document.getElementById('auth-mode-password'),
+  authUsername: document.getElementById('auth-username'),
+  authPassword: document.getElementById('auth-password'),
+  authSubmit: document.getElementById('auth-submit'),
+  authCancel: document.getElementById('auth-cancel'),
+  authTip: document.getElementById('auth-tip'),
+  currentUser: document.getElementById('current-user'),
+  changePassword: document.getElementById('change-password'),
+  logout: document.getElementById('logout'),
+  passwordModal: document.getElementById('password-modal'),
+  passwordForm: document.getElementById('password-form'),
+  passwordModalUser: document.getElementById('password-modal-user'),
+  passwordOld: document.getElementById('password-old'),
+  passwordNew: document.getElementById('password-new'),
+  passwordSubmit: document.getElementById('password-submit'),
+  passwordCancel: document.getElementById('password-cancel'),
+  passwordTip: document.getElementById('password-tip'),
   messages: document.getElementById('messages'),
   input: document.getElementById('input'),
   send: document.getElementById('send'),
@@ -41,6 +63,12 @@ const els = {
 
 let sessionId = null;
 let streaming = false;
+
+// 认证界面当前表单：login / register（改密已收进已登录界面，见 design.md 决策 11）
+let authMode = 'login';
+
+// 当前登录用户名，改密表单据此展示归属，不需要使用者重填
+let currentUsername = '';
 
 // CDN 未加载时下方逻辑仍需可用，这里先做存在性判断
 if (window.marked) {
@@ -325,6 +353,10 @@ async function send() {
       }),
     });
 
+    if (response.status === 401) {
+      handleUnauthorized();
+      return;
+    }
     if (!response.ok || !response.body) {
       throw new Error(await describeHttpError(response));
     }
@@ -440,6 +472,10 @@ async function downloadProject() {
     const response = await fetch(
       `/api/workspace/download?session_id=${encodeURIComponent(sessionId)}`
     );
+    if (response.status === 401) {
+      handleUnauthorized();
+      return;
+    }
     if (!response.ok) {
       setStatus(await describeHttpError(response));
       return;
@@ -467,10 +503,14 @@ function renderHistory(messages) {
   });
 }
 
-/** 载入历史消息：ok / missing（会话已不存在）/ error。 */
+/** 载入历史消息：ok / missing（会话已不存在）/ unauthorized / error。 */
 async function loadHistory(id) {
   try {
     const response = await fetch(`/api/sessions/${encodeURIComponent(id)}/messages`);
+    if (response.status === 401) {
+      handleUnauthorized();
+      return 'unauthorized';
+    }
     if (response.status === 404) return 'missing';
     if (!response.ok) return 'error';
     const payload = await response.json();
@@ -535,6 +575,10 @@ function renderHistoryList(sessions) {
 async function refreshHistoryList() {
   try {
     const response = await fetch('/api/sessions');
+    if (response.status === 401) {
+      handleUnauthorized();
+      return;
+    }
     if (!response.ok) return;
     const payload = await response.json();
     renderHistoryList(payload.sessions || []);
@@ -559,6 +603,8 @@ async function switchSession(id) {
       forgetStoredSession();
       clearMessages();
       setStatus('该会话已不存在，已切到新会话');
+    } else if (result === 'unauthorized') {
+      return;
     } else {
       setStatus('历史会话载入失败，请稍后重试');
       return;
@@ -584,13 +630,244 @@ async function bootstrap() {
       sessionId = stored;
     } else if (result === 'missing') {
       forgetStoredSession();
+    } else if (result === 'unauthorized') {
+      return;
     }
   }
   renderSessionId();
   await refreshHistoryList();
 }
 
+// --- 认证 ---
+
+const AUTH_MODE_TEXT = {
+  login: { submit: '登录', autocomplete: 'current-password' },
+  register: { submit: '注册', autocomplete: 'new-password' },
+};
+
+const BAD_CREDENTIALS_TIP = '用户名或密码错误。';
+const UNAUTHORIZED_TIP = '登录状态已失效，请重新登录。';
+const CHANGE_PASSWORD_HINT = '修改密码需要先登录：登录后可在对话界面顶栏的「修改密码」中修改。';
+
+function setAuthTip(text, kind) {
+  els.authTip.textContent = text || '';
+  els.authTip.classList.toggle('error', kind === 'error');
+  els.authTip.classList.toggle('ok', kind === 'ok');
+}
+
+/** 切换认证表单；切换与取消都会清空已输入的密码。 */
+function setAuthMode(mode) {
+  authMode = mode;
+  const text = AUTH_MODE_TEXT[mode];
+  els.authModeLogin.classList.toggle('active', mode === 'login');
+  els.authModeRegister.classList.toggle('active', mode === 'register');
+  els.authSubmit.textContent = text.submit;
+  els.authPassword.setAttribute('autocomplete', text.autocomplete);
+  els.authPassword.value = '';
+  setAuthTip('');
+}
+
+/** 未登录（或登录态失效）时的唯一界面。 */
+function showAuth(tip) {
+  sessionId = null;
+  currentUsername = '';
+  forgetStoredSession();
+  closePasswordModal();
+  els.chatApp.hidden = true;
+  els.authApp.hidden = false;
+  setAuthTip(tip || '');
+  els.authUsername.focus();
+}
+
+/** 登录成功后进入对话界面。 */
+function enterChat(identity) {
+  const username = (identity && identity.username) || '';
+  const role = identity && identity.role === 'admin' ? '（管理员）' : '';
+  currentUsername = username;
+  els.currentUser.textContent = username ? `当前用户：${username}${role}` : '';
+  els.currentUser.title = username ? `当前登录用户：${username}${role}` : '当前登录用户';
+  els.passwordModalUser.textContent = username
+    ? `将修改账号「${username}${role}」的密码，其他设备上的登录态会立即失效。`
+    : '';
+  els.authApp.hidden = true;
+  els.chatApp.hidden = false;
+  bootstrap();
+}
+
+/** 任何受保护接口返回 401 时的统一出口：回到认证界面并提示重新登录。 */
+function handleUnauthorized() {
+  showAuth(UNAUTHORIZED_TIP);
+}
+
+/** 提交 JSON 并统一取出 detail；网络异常也归一化为失败结果。 */
+async function postJson(path, body) {
+  try {
+    const response = await fetch(path, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body || {}),
+    });
+    let data = null;
+    try {
+      data = await response.json();
+    } catch (err) {
+      data = null;
+    }
+    const detail = data && typeof data.detail === 'string' ? data.detail : '';
+    return { ok: response.ok, status: response.status, data, detail };
+  } catch (err) {
+    return { ok: false, status: 0, data: null, detail: `无法连接到服务：${err.message}` };
+  }
+}
+
+function failureText(result, fallback) {
+  return result.detail || `${fallback}（HTTP ${result.status}）`;
+}
+
+async function submitAuth(event) {
+  event.preventDefault();
+  const username = els.authUsername.value.trim();
+  const password = els.authPassword.value;
+
+  if (!username) {
+    setAuthTip('请填写用户名。', 'error');
+    return;
+  }
+  if (!password) {
+    setAuthTip('请填写密码。', 'error');
+    return;
+  }
+
+  els.authSubmit.disabled = true;
+  try {
+    if (authMode === 'register') {
+      const result = await postJson('/api/auth/register', { username, password });
+      if (!result.ok) {
+        setAuthTip(failureText(result, '注册失败'), 'error');
+        return;
+      }
+      setAuthMode('login');
+      setAuthTip((result.data && result.data.message) || '注册成功，请登录。', 'ok');
+      return;
+    }
+
+    const result = await postJson('/api/auth/login', { username, password });
+    if (result.status === 401) {
+      setAuthTip(BAD_CREDENTIALS_TIP, 'error');
+      return;
+    }
+    if (!result.ok) {
+      setAuthTip(failureText(result, '登录失败'), 'error');
+      return;
+    }
+    enterChat(result.data);
+  } finally {
+    els.authSubmit.disabled = false;
+  }
+}
+
+// --- 修改密码（仅已登录用户；见 design.md 决策 11）---
+
+function setPasswordTip(text, kind) {
+  els.passwordTip.textContent = text || '';
+  els.passwordTip.classList.toggle('error', kind === 'error');
+  els.passwordTip.classList.toggle('ok', kind === 'ok');
+}
+
+function openPasswordModal() {
+  els.passwordOld.value = '';
+  els.passwordNew.value = '';
+  setPasswordTip('');
+  els.passwordModal.hidden = false;
+  els.passwordOld.focus();
+}
+
+function closePasswordModal() {
+  els.passwordModal.hidden = true;
+  els.passwordOld.value = '';
+  els.passwordNew.value = '';
+  setPasswordTip('');
+}
+
+async function submitPasswordChange(event) {
+  event.preventDefault();
+  const oldPassword = els.passwordOld.value;
+  const newPassword = els.passwordNew.value;
+
+  if (!oldPassword) {
+    setPasswordTip('请填写原密码。', 'error');
+    return;
+  }
+  if (!newPassword) {
+    setPasswordTip('请填写新密码。', 'error');
+    return;
+  }
+
+  els.passwordSubmit.disabled = true;
+  try {
+    const result = await postJson('/api/auth/password', {
+      old_password: oldPassword,
+      new_password: newPassword,
+    });
+    if (result.status === 401) {
+      handleUnauthorized();
+      return;
+    }
+    if (!result.ok) {
+      setPasswordTip(failureText(result, '修改密码失败'), 'error');
+      return;
+    }
+    closePasswordModal();
+    setStatus((result.data && result.data.message) || '密码已修改，其他登录态已失效。');
+  } finally {
+    els.passwordSubmit.disabled = false;
+  }
+}
+
+async function logout() {
+  els.logout.disabled = true;
+  try {
+    await postJson('/api/auth/logout', {});
+  } finally {
+    els.logout.disabled = false;
+    els.authUsername.value = '';
+    setAuthMode('login');
+    showAuth('已退出登录。');
+  }
+}
+
+/** 页面加载门控：先确认登录态，成功才进入对话界面。 */
+async function start() {
+  setAuthMode('login');
+  try {
+    const response = await fetch('/api/auth/me');
+    if (response.ok) {
+      enterChat(await response.json());
+      return;
+    }
+    showAuth(
+      response.status === 401 ? '' : `无法确认登录状态（HTTP ${response.status}），请重新登录。`
+    );
+  } catch (err) {
+    showAuth(`无法连接到服务：${err.message}`);
+  }
+}
+
 function bindEvents() {
+  els.authForm.addEventListener('submit', submitAuth);
+  els.authCancel.addEventListener('click', () => setAuthMode('login'));
+  els.authModeLogin.addEventListener('click', () => setAuthMode('login'));
+  els.authModeRegister.addEventListener('click', () => setAuthMode('register'));
+  // 未登录时改密不被允许，这里只作入口提示，不进入任何可提交的改密表单
+  els.authModePassword.addEventListener('click', () => {
+    setAuthMode('login');
+    setAuthTip(CHANGE_PASSWORD_HINT);
+    els.authUsername.focus();
+  });
+  els.changePassword.addEventListener('click', openPasswordModal);
+  els.passwordForm.addEventListener('submit', submitPasswordChange);
+  els.passwordCancel.addEventListener('click', closePasswordModal);
+  els.logout.addEventListener('click', logout);
   els.send.addEventListener('click', send);
   els.newSession.addEventListener('click', startNewSession);
   els.downloadProject.addEventListener('click', downloadProject);
@@ -602,7 +879,9 @@ function bindEvents() {
   els.historyPanel.addEventListener('click', (event) => event.stopPropagation());
   document.addEventListener('click', () => toggleHistory(false));
   document.addEventListener('keydown', (event) => {
-    if (event.key === 'Escape') toggleHistory(false);
+    if (event.key !== 'Escape') return;
+    toggleHistory(false);
+    if (!els.passwordModal.hidden) closePasswordModal();
   });
   els.input.addEventListener('keydown', (event) => {
     if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
@@ -613,4 +892,4 @@ function bindEvents() {
 }
 
 bindEvents();
-bootstrap();
+start();

@@ -1,15 +1,16 @@
 """沙箱打包下载接口。
 
 GET /api/workspace/download：把某会话沙箱内的全部文件打包为 zip 返回，保留相对目录结构。
+要求登录，且目标会话必须属于当前登录用户；他人会话与不存在会话一律按不存在处理，
 沙箱为空或会话不存在时返回 404 与中文提示，而不是一个空压缩包（见 design.md 决策 8）。
 """
 
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import Response
 
-from app.schemas import DEFAULT_USER_ID
+from app.api.auth import CurrentUser, current_user
 from app.services import workspace
 from app.services.runner import get_session
 
@@ -20,11 +21,13 @@ router = APIRouter(prefix="/api", tags=["workspace"])
 async def download_workspace(
     request: Request,
     session_id: str,
-    user_id: str = DEFAULT_USER_ID,
+    user: CurrentUser = Depends(current_user),
 ) -> Response:
     """下载该会话沙箱的整套文件；内容为 application/zip。"""
     session = await get_session(
-        request.app.state.session_service, user_id=user_id, session_id=session_id
+        request.app.state.session_service,
+        user_id=user.session_user_id,
+        session_id=session_id,
     )
     if session is None:
         raise HTTPException(status_code=404, detail=f"会话 {session_id} 不存在，无法下载。")

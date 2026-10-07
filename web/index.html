@@ -12,7 +12,41 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
 </head>
 <body>
-  <div class="app">
+  <div class="auth" id="auth-app">
+    <div class="auth-card">
+      <div class="auth-head">
+        <span class="brand-title">代码辅助智能体</span>
+        <span class="brand-sub">代码生成 · 代码解释 · 重构优化 · 缺陷排查</span>
+      </div>
+
+      <div class="auth-modes">
+        <button id="auth-mode-login" type="button" class="ghost active">登录</button>
+        <button id="auth-mode-register" type="button" class="ghost">注册</button>
+        <button id="auth-mode-password" type="button" class="ghost">修改密码</button>
+      </div>
+
+      <form id="auth-form" class="auth-form">
+        <label class="field" for="auth-username">
+          <span>用户名</span>
+          <input id="auth-username" type="text" maxlength="20" autocomplete="username"
+                 placeholder="3 到 20 个字符" />
+        </label>
+        <label class="field" for="auth-password">
+          <span>密码</span>
+          <input id="auth-password" type="password" maxlength="20"
+                 autocomplete="current-password" />
+        </label>
+        <div class="auth-actions">
+          <button id="auth-submit" type="submit" class="primary">登录</button>
+          <button id="auth-cancel" type="button" class="ghost">取消</button>
+        </div>
+      </form>
+
+      <p id="auth-tip" class="auth-tip" role="status"></p>
+    </div>
+  </div>
+
+  <div class="app" id="chat-app" hidden>
     <header class="topbar">
       <div class="brand">
         <span class="brand-title">代码辅助智能体</span>
@@ -37,6 +71,9 @@
         <button id="download-project" type="button" class="ghost"
                 title="把当前会话生成的全部文件打包下载">下载整个项目</button>
         <span id="session-id" class="session-id" title="当前还没有会话 ID">新会话（尚未创建）</span>
+        <span id="current-user" class="user-chip" title="当前登录用户"></span>
+        <button id="change-password" type="button" class="ghost">修改密码</button>
+        <button id="logout" type="button" class="ghost">退出登录</button>
       </div>
 
       <div id="history-panel" class="history-panel" hidden>
@@ -62,6 +99,29 @@
         <button id="send" type="button" class="primary">发送</button>
       </div>
     </footer>
+  </div>
+
+  <div class="modal" id="password-modal" hidden>
+    <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="password-modal-title">
+      <span class="brand-title" id="password-modal-title">修改密码</span>
+      <p class="modal-note" id="password-modal-user"></p>
+      <form id="password-form" class="auth-form">
+        <label class="field" for="password-old">
+          <span>原密码</span>
+          <input id="password-old" type="password" maxlength="20" autocomplete="current-password" />
+        </label>
+        <label class="field" for="password-new">
+          <span>新密码</span>
+          <input id="password-new" type="password" maxlength="20" autocomplete="new-password"
+                 placeholder="3 到 20 个字符" />
+        </label>
+        <div class="auth-actions">
+          <button id="password-submit" type="submit" class="primary">确认修改</button>
+          <button id="password-cancel" type="button" class="ghost">取消</button>
+        </div>
+      </form>
+      <p id="password-tip" class="auth-tip" role="status"></p>
+    </div>
   </div>
 
   <script src="/app.js"></script>

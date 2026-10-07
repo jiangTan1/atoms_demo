@@ -40,6 +40,14 @@ DEFAULT_WORKSPACE_MAX_FILE_BYTES = 262144
 DEFAULT_WORKSPACE_MAX_FILES = 200
 DEFAULT_WORKSPACE_MAX_TOTAL_BYTES = 10485760
 
+# 登录态 Cookie 是否带 Secure（见 specs/access-control/spec.md 的「登录与登录态」）：
+# 默认 false 以便本机与内网 HTTP 演示；部署到 HTTPS 后置为 true
+DEFAULT_AUTH_COOKIE_SECURE = False
+
+# 布尔配置项接受的写法（大小写不敏感）
+_BOOL_TRUE = frozenset({"true", "1", "yes", "on"})
+_BOOL_FALSE = frozenset({"false", "0", "no", "off"})
+
 
 class ConfigError(RuntimeError):
     """配置缺失或格式非法。消息中始终包含出问题的配置项名称。"""
@@ -63,6 +71,7 @@ class Settings:
     workspace_max_file_bytes: int
     workspace_max_files: int
     workspace_max_total_bytes: int
+    auth_cookie_secure: bool
 
     @property
     def api_base(self) -> str:
@@ -125,6 +134,18 @@ def _positive_int(env: Mapping[str, str], key: str, default: int) -> int:
     return value
 
 
+def _bool_flag(env: Mapping[str, str], key: str, default: bool) -> bool:
+    """读取可选布尔配置项：缺省取默认值，非法取值时报错并点名配置项。"""
+    raw = (env.get(key) or "").strip().lower()
+    if not raw:
+        return default
+    if raw in _BOOL_TRUE:
+        return True
+    if raw in _BOOL_FALSE:
+        return False
+    raise ConfigError(key, f"不是合法布尔值：{raw!r}，可选 true / false")
+
+
 def load_settings(env: Mapping[str, str] | None = None) -> Settings:
     """读取并校验配置；env 为 None 时先加载 .env 再读进程环境变量。"""
     if env is None:
@@ -145,6 +166,9 @@ def load_settings(env: Mapping[str, str] | None = None) -> Settings:
         ),
         workspace_max_total_bytes=_positive_int(
             env, "WORKSPACE_MAX_TOTAL_BYTES", DEFAULT_WORKSPACE_MAX_TOTAL_BYTES
+        ),
+        auth_cookie_secure=_bool_flag(
+            env, "AUTH_COOKIE_SECURE", DEFAULT_AUTH_COOKIE_SECURE
         ),
     )
 

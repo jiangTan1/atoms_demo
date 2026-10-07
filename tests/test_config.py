@@ -94,3 +94,26 @@ def test_invalid_workspace_quota_reports_the_key_name(key, value):
 
     assert excinfo.value.key == key
     assert key in str(excinfo.value)
+
+
+def test_auth_cookie_secure_defaults_to_false():
+    settings = load_settings(BASE_ENV)
+
+    assert settings.auth_cookie_secure is False
+
+
+def test_auth_cookie_secure_accepts_explicit_true():
+    settings = load_settings({**BASE_ENV, "AUTH_COOKIE_SECURE": "true"})
+
+    assert settings.auth_cookie_secure is True
+
+
+@pytest.mark.parametrize("value", ["maybe", "2", "tru e"])
+def test_invalid_auth_cookie_secure_reports_the_key_name(value):
+    env = {**BASE_ENV, "AUTH_COOKIE_SECURE": value}
+
+    with pytest.raises(ConfigError) as excinfo:
+        load_settings(env)
+
+    assert excinfo.value.key == "AUTH_COOKIE_SECURE"
+    assert "AUTH_COOKIE_SECURE" in str(excinfo.value)

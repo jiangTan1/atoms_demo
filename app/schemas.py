@@ -25,18 +25,19 @@ TARGET_LANGUAGES = {
     "javascript": "JavaScript",
 }
 
-DEFAULT_USER_ID = "web-user"
-
 
 class ChatRequest(BaseModel):
-    """一次对话请求。session_id 为空时由服务端新建会话。"""
+    """一次对话请求。session_id 为空时由服务端新建会话。
+
+    归属者不再由客户端指定：会话归属一律取自登录态（见 specs/session-history/spec.md
+    的「会话归属由登录态决定」）。请求里若仍带 user_id，会被模型忽略。
+    """
 
     message: str = Field(min_length=1, description="使用者的自然语言问题或代码片段")
     session_id: str | None = None
-    user_id: str = Field(default=DEFAULT_USER_ID, min_length=1)
     target_language: str | None = None
 
-    @field_validator("message", "user_id")
+    @field_validator("message")
     @classmethod
     def _strip(cls, value: str) -> str:
         stripped = value.strip()
@@ -58,7 +59,11 @@ class ChatRequest(BaseModel):
 
 
 class SessionCreateRequest(BaseModel):
-    user_id: str = Field(default=DEFAULT_USER_ID, min_length=1)
+    """新建会话请求体。
+
+    归属者取自登录态，请求体不再携带任何归属信息；保留该模型是为了维持
+    `POST /api/sessions` 可带空请求体的既有形态，多余的字段一律被忽略。
+    """
 
 
 class SessionResponse(BaseModel):
@@ -93,6 +98,53 @@ class SessionSummary(BaseModel):
 
 class SessionListResponse(BaseModel):
     sessions: list[SessionSummary]
+
+
+# --- 认证 ---
+#
+# 用户名与密码的长度约束由账号服务负责，以保证拒绝时的提示为中文且一致；
+# 这里的模型只保证字段存在，不做过早的格式拒绝。
+
+
+class RegisterRequest(BaseModel):
+    username: str
+    password: str
+
+
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+
+class ChangePasswordRequest(BaseModel):
+    old_password: str
+    new_password: str
+
+
+class AdminUserRequest(BaseModel):
+    """管理员新增用户。"""
+
+    username: str
+    password: str
+
+
+class AdminResetPasswordRequest(BaseModel):
+    """管理员重置指定用户的密码（无需原密码）。"""
+
+    password: str
+
+
+class IdentityResponse(BaseModel):
+    """当前登录身份。"""
+
+    username: str
+    role: str
+
+
+class AuthMessage(BaseModel):
+    """认证类操作的文字反馈。"""
+
+    message: str
 
 
 # --- SSE 帧 ---
