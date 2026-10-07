@@ -68,7 +68,9 @@ body {
 
 .controls {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
+  justify-content: flex-end;
   gap: 10px;
 }
 
@@ -137,6 +139,15 @@ button.ghost {
 
 button.ghost:hover {
   border-color: var(--text-muted);
+}
+
+button.ghost:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+button.ghost:disabled:hover {
+  border-color: var(--border);
 }
 
 /* 历史会话面板 */

@@ -30,6 +30,7 @@ const els = {
   send: document.getElementById('send'),
   language: document.getElementById('language'),
   newSession: document.getElementById('new-session'),
+  downloadProject: document.getElementById('download-project'),
   historyToggle: document.getElementById('history-toggle'),
   historyPanel: document.getElementById('history-panel'),
   historyList: document.getElementById('history-list'),
@@ -151,8 +152,7 @@ function uniqueFileName(base, ext, used) {
   return count === 1 ? `${base}.${ext}` : `${base}-${count}.${ext}`;
 }
 
-function saveAsFile(text, filename) {
-  const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+function saveBlob(blob, filename) {
   const url = URL.createObjectURL(blob);
   const link = document.createElement('a');
   link.href = url;
@@ -161,6 +161,10 @@ function saveAsFile(text, filename) {
   link.click();
   link.remove();
   setTimeout(() => URL.revokeObjectURL(url), 0);
+}
+
+function saveAsFile(text, filename) {
+  saveBlob(new Blob([text], { type: 'text/plain;charset=utf-8' }), filename);
 }
 
 function enhanceCodeBlocks(root) {
@@ -410,6 +414,45 @@ function startNewSession() {
   els.input.focus();
 }
 
+// --- 项目打包下载 ---
+
+/** 取服务端给出的下载文件名，取不到时用会话 ID 兜底。 */
+function filenameFrom(response) {
+  const header = response.headers.get('content-disposition') || '';
+  const match = /filename="?([^";]+)"?/i.exec(header);
+  return match ? match[1] : `workspace-${sessionId.slice(0, 8)}.zip`;
+}
+
+/** 把当前会话沙箱内生成的全部文件打包下载（保留目录结构）。 */
+async function downloadProject() {
+  if (streaming) {
+    setStatus('正在生成回复，请稍候再下载');
+    return;
+  }
+  if (!sessionId) {
+    setStatus('还没有会话与生成的文件，先让助手生成一个项目再下载');
+    return;
+  }
+
+  els.downloadProject.disabled = true;
+  setStatus('正在打包…');
+  try {
+    const response = await fetch(
+      `/api/workspace/download?session_id=${encodeURIComponent(sessionId)}`
+    );
+    if (!response.ok) {
+      setStatus(await describeHttpError(response));
+      return;
+    }
+    saveBlob(await response.blob(), filenameFrom(response));
+    setStatus('已下载当前会话生成的全部文件');
+  } catch (err) {
+    setStatus(`下载失败：${err.message}`);
+  } finally {
+    els.downloadProject.disabled = false;
+  }
+}
+
 function renderHistory(messages) {
   els.messages.innerHTML = '';
   if (!messages.length) {
@@ -550,6 +593,7 @@ async function bootstrap() {
 function bindEvents() {
   els.send.addEventListener('click', send);
   els.newSession.addEventListener('click', startNewSession);
+  els.downloadProject.addEventListener('click', downloadProject);
   els.historyToggle.addEventListener('click', (event) => {
     event.stopPropagation();
     toggleHistory();

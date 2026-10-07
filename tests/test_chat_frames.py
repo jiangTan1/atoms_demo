@@ -35,21 +35,70 @@ def test_partial_text_becomes_incremental_frame():
     ]
 
 
-def test_final_event_carries_full_accumulated_text():
+def test_final_full_frame_is_emitted_once_after_stream_ends():
+    """纯文本回复：聚合事件不重复下发已流出的内容，完整帧只在流结束后产出一次。"""
     builder = FrameBuilder(session_id="s-1")
     builder.consume(make_event("这段", partial=True))
     builder.consume(make_event("代码", partial=True))
 
     frames = builder.consume(make_event("这段代码没问题。", partial=False, event_id="evt-9"))
-    done = builder.done()
 
+    # 聚合事件比增量多出的尾段按增量补下，已下发部分不重复
     assert [frame.model_dump() for frame in frames] == [
-        {"type": "text", "data": "这段代码", "partial": False}
+        {"type": "text", "data": "没问题。", "partial": True}
     ]
-    assert done.model_dump() == {
+
+    full = builder.finish()
+    assert [frame.model_dump() for frame in full] == [
+        {"type": "text", "data": "这段代码没问题。", "partial": False}
+    ]
+    assert builder.done().model_dump() == {
         "type": "done",
         "data": {"session_id": "s-1", "message_id": "evt-9"},
     }
+
+
+def test_interleaved_text_and_tool_calls_yield_single_full_frame():
+    """挂上工具后一轮会出现「文本 → 工具调用 → 更多文本」，完整帧只能有一个。"""
+    builder = FrameBuilder(session_id="s-1")
+    streamed = []
+
+    def feed(event):
+        frames = builder.consume(event)
+        streamed.extend(frame.data for frame in frames if frame.type == "text")
+        return frames
+
+    # 第一段文本（增量 + 本轮聚合）
+    feed(make_event("好的，", partial=True))
+    feed(make_event("我来生成项目。", partial=True))
+    feed(make_event("好的，我来生成项目。", partial=False, event_id="evt-1"))
+    # 模型发起工具调用：只有 function_call 部件，没有文本
+    assert feed(make_event(None, partial=False, event_id="evt-2")) == []
+    # 工具结果回灌：只有 function_response 部件，没有文本
+    assert feed(make_event(None, partial=False, event_id="evt-3")) == []
+    # 第二段文本
+    feed(make_event("已写入 ", partial=True))
+    feed(make_event("3 个文件。", partial=True))
+    feed(make_event("已写入 3 个文件。", partial=False, event_id="evt-4"))
+
+    full = builder.finish()
+
+    assert len(full) == 1
+    assert full[0].partial is False
+    assert full[0].data == "好的，我来生成项目。已写入 3 个文件。"
+    # 增量拼接结果与完整帧一致，前端不会出现重复或跳变
+    assert "".join(streamed) == full[0].data
+    assert builder.done().data.message_id == "evt-4"
+
+
+def test_tool_only_turn_produces_no_text_frames():
+    """整轮只有工具调用与结果、没有任何文本时，不应产生空的文本帧。"""
+    builder = FrameBuilder(session_id="s-1")
+
+    assert builder.consume(make_event(None, partial=False, event_id="evt-1")) == []
+
+    assert builder.finish() == []
+    assert builder.done().data.message_id == "evt-1"
 
 
 def test_exception_becomes_error_frame():
@@ -212,8 +261,13 @@ def test_clarify_marker_is_stripped_across_partial_slices():
         {"type": "text", "data": "\n请问目标语言是？", "partial": True}
     ]
 
-    final = builder.consume(make_event("整段", partial=False, event_id="evt-9"))
-    assert [frame.model_dump() for frame in final] == [
+    # 聚合事件重复本轮内容时不再重复下发
+    assert builder.consume(
+        make_event(f"{CLARIFY_MARKER}\n请问目标语言是？", partial=False, event_id="evt-9")
+    ) == []
+
+    full = builder.finish()
+    assert [frame.model_dump() for frame in full] == [
         {"type": "text", "data": "\n请问目标语言是？", "partial": False}
     ]
 
@@ -237,8 +291,12 @@ def test_single_shot_reply_with_marker_is_stripped():
     frames = builder.consume(
         make_event(f"{CLARIFY_MARKER}\n请问要哪个语言？", partial=False)
     )
-
     assert [frame.model_dump() for frame in frames] == [
+        {"type": "text", "data": "\n请问要哪个语言？", "partial": True}
+    ]
+
+    full = builder.finish()
+    assert [frame.model_dump() for frame in full] == [
         {"type": "text", "data": "\n请问要哪个语言？", "partial": False}
     ]
 

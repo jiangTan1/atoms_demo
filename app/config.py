@@ -34,6 +34,12 @@ SESSION_BACKENDS = ("memory", "sqlite")
 # 会话默认落盘：页面刷新与服务重启后仍能找回历史对话
 DEFAULT_SESSION_BACKEND = "sqlite"
 
+# 会话沙箱配额默认值（见 specs/file-workspace/spec.md 的「沙箱配额限制」）：
+# 单文件 256 KB、单会话 200 个文件、单会话总占用 10 MB
+DEFAULT_WORKSPACE_MAX_FILE_BYTES = 262144
+DEFAULT_WORKSPACE_MAX_FILES = 200
+DEFAULT_WORKSPACE_MAX_TOTAL_BYTES = 10485760
+
 
 class ConfigError(RuntimeError):
     """配置缺失或格式非法。消息中始终包含出问题的配置项名称。"""
@@ -54,6 +60,9 @@ class Settings:
     app_host: str
     app_port: int
     session_backend: str
+    workspace_max_file_bytes: int
+    workspace_max_files: int
+    workspace_max_total_bytes: int
 
     @property
     def api_base(self) -> str:
@@ -102,6 +111,20 @@ def _validate_session_backend(env: Mapping[str, str]) -> str:
     return backend
 
 
+def _positive_int(env: Mapping[str, str], key: str, default: int) -> int:
+    """读取可选的配额配置项：缺省取默认值，非正整数时报错并点名配置项。"""
+    raw = (env.get(key) or "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        raise ConfigError(key, f"不是合法整数：{raw!r}") from None
+    if value <= 0:
+        raise ConfigError(key, f"必须是正整数，当前为 {value}")
+    return value
+
+
 def load_settings(env: Mapping[str, str] | None = None) -> Settings:
     """读取并校验配置；env 为 None 时先加载 .env 再读进程环境变量。"""
     if env is None:
@@ -114,6 +137,15 @@ def load_settings(env: Mapping[str, str] | None = None) -> Settings:
         app_host=(env.get("APP_HOST") or "").strip() or "127.0.0.1",
         app_port=_validate_port(env),
         session_backend=_validate_session_backend(env),
+        workspace_max_file_bytes=_positive_int(
+            env, "WORKSPACE_MAX_FILE_BYTES", DEFAULT_WORKSPACE_MAX_FILE_BYTES
+        ),
+        workspace_max_files=_positive_int(
+            env, "WORKSPACE_MAX_FILES", DEFAULT_WORKSPACE_MAX_FILES
+        ),
+        workspace_max_total_bytes=_positive_int(
+            env, "WORKSPACE_MAX_TOTAL_BYTES", DEFAULT_WORKSPACE_MAX_TOTAL_BYTES
+        ),
     )
 
 

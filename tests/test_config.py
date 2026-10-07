@@ -53,3 +53,44 @@ def test_invalid_port_is_rejected():
         load_settings(env)
 
     assert excinfo.value.key == "APP_PORT"
+
+
+def test_workspace_quotas_fall_back_to_defaults():
+    settings = load_settings(BASE_ENV)
+
+    assert settings.workspace_max_file_bytes == 262144
+    assert settings.workspace_max_files == 200
+    assert settings.workspace_max_total_bytes == 10485760
+
+
+def test_workspace_quotas_accept_explicit_values():
+    env = {
+        **BASE_ENV,
+        "WORKSPACE_MAX_FILE_BYTES": "1024",
+        "WORKSPACE_MAX_FILES": "5",
+        "WORKSPACE_MAX_TOTAL_BYTES": "2048",
+    }
+
+    settings = load_settings(env)
+
+    assert settings.workspace_max_file_bytes == 1024
+    assert settings.workspace_max_files == 5
+    assert settings.workspace_max_total_bytes == 2048
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        ("WORKSPACE_MAX_FILE_BYTES", "0"),
+        ("WORKSPACE_MAX_FILES", "-1"),
+        ("WORKSPACE_MAX_TOTAL_BYTES", "10MB"),
+    ],
+)
+def test_invalid_workspace_quota_reports_the_key_name(key, value):
+    env = {**BASE_ENV, key: value}
+
+    with pytest.raises(ConfigError) as excinfo:
+        load_settings(env)
+
+    assert excinfo.value.key == key
+    assert key in str(excinfo.value)

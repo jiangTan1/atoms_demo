@@ -15,6 +15,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app.api import chat as chat_api
 from app.api import sessions as sessions_api
+from app.api import workspace as workspace_api
 from app.config import Settings, get_settings
 from app.services.runner import RunnerService
 
@@ -38,6 +39,7 @@ def create_app() -> FastAPI:
 
     app.include_router(sessions_api.router)
     app.include_router(chat_api.router)
+    app.include_router(workspace_api.router)
 
     # 静态前端挂在最后，/api/* 由上面的路由优先匹配
     app.mount("/", StaticFiles(directory=WEB_DIR, html=True), name="web")

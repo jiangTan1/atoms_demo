@@ -3,8 +3,11 @@
 以 RunConfig(streaming_mode=StreamingMode.SSE) 驱动 runner.run_async，
 并把 ADK Event 归一化为 text / error / done 三类 SSE 帧（协议见 design.md 决策 4）。
 
-文本累积放在服务端：partial 事件按增量下发，最终事件补一个 partial=False 的完整帧，
-这样前端即使在增量丢帧的情况下也能拿到完整内容。
+文本累积放在服务端：逐片下发增量帧（打字机体验），并在事件流结束后补一个 partial=False
+的完整帧兜底，这样前端即使在增量丢帧的情况下也能拿到完整内容。
+
+挂上文件工具后，一轮对话会出现「文本 → 工具调用 → 更多文本」的交替，partial=False
+不再等价于本轮最终回复，因此完整帧统一改在流结束后产出（见 design.md 决策 5）。
 """
 
 from __future__ import annotations
@@ -190,8 +193,23 @@ def error_frame_from_event(event) -> ErrorFrame:
     return ErrorFrame(data=ErrorData(code=code, message=message))
 
 
+def _unseen_suffix(seen: str, text: str) -> str:
+    """返回 text 中尚未出现在 seen 末尾的尾段。
+
+    SSE 模式（progressive 默认开启）下，一轮回复既会逐片下发增量文本，又会补一个本轮
+    汇总的聚合事件；聚合文本若整体再累积一次就会重复。这里取「seen 末尾与 text 开头的最长
+    重合」，只保留真正新增的尾段：整段重复时返回空串，聚合比增量更完整时补上缺的部分。
+    """
+    for size in range(min(len(seen), len(text)), 0, -1):
+        if seen.endswith(text[:size]):
+            return text[size:]
+    return text
+
+
 class FrameBuilder:
     """把一个会话轮次中的 ADK Event 序列归一化为 SSE 帧。
+
+    只产出增量帧；完整帧在事件流结束后由 finish() 产出一次。
 
     回复开头的澄清标记必须对使用者不可见：增量文本会把 11 个字符的标记切成多片，
     因此先缓存开头、判定完成后再放行（见 design.md 决策 3）。
@@ -207,7 +225,7 @@ class FrameBuilder:
         self._head_done = False
 
     def _settle_head(self, *, force: bool) -> None:
-        """判定回复开头是否为澄清标记；force 表示事件流已结束，必须给出结论。"""
+        """判定回复开头是否为澄清标记；force 表示该事件已完整给出本轮开头。"""
         if self._head_done:
             return
         stripped = self._raw.lstrip()
@@ -234,7 +252,7 @@ class FrameBuilder:
         return [TextFrame(data=delta, partial=True)]
 
     def consume(self, event) -> list[Frame]:
-        """消费一个 Event，返回它对应的帧（可能为空）。"""
+        """消费一个 Event，返回它对应的增量帧（可能为空）。"""
         if getattr(event, "error_code", None):
             self.error_emitted = True
             return [error_frame_from_event(event)]
@@ -245,21 +263,29 @@ class FrameBuilder:
 
         text = extract_text(event)
         if not text:
+            # 工具调用与工具结果事件只有 function_call / function_response 部件，天然跳过
             return []
 
-        if getattr(event, "partial", False):
+        partial = bool(getattr(event, "partial", False))
+        if partial:
             self._raw += text
-            self._settle_head(force=False)
-            # 开头仍可能是标记的一部分（且已不只有空白）时先不下发，避免半截标记闪现
-            if not self._head_done and self._raw.strip():
-                return []
-            return self._drain()
+        else:
+            # 聚合事件的文本是本轮汇总，增量片段已下发过的部分不能重复下发
+            self._raw += _unseen_suffix(self._raw, text)
 
-        # 最终事件：此前没有任何增量时以整段文本为准，否则用累积文本补完整帧
-        if not self._raw:
-            self._raw = text
+        self._settle_head(force=not partial)
+        # 开头仍可能是标记的一部分（且已不只有空白）时先不下发，避免半截标记闪现
+        if not self._head_done and self._raw.strip():
+            return []
+        return self._drain()
+
+    def finish(self) -> list[Frame]:
+        """事件流结束后产出唯一一次完整帧，作为增量丢帧时的兜底。"""
         self._settle_head(force=True)
-        return [TextFrame(data=self._raw[self._offset :], partial=False)]
+        text = self._raw[self._offset :]
+        if not text:
+            return []
+        return [TextFrame(data=text, partial=False)]
 
     def done(self) -> DoneFrame:
         return DoneFrame(data=DoneData(session_id=self.session_id, message_id=self.message_id))
@@ -312,5 +338,9 @@ async def stream_frames(
         if not builder.error_emitted:
             yield error_frame_from_exception(exc)
         return
+
+    # 完整帧统一在流结束后产出：一轮里可能有「文本 → 工具调用 → 更多文本」的交替
+    for frame in builder.finish():
+        yield frame
 
     yield builder.done()
