@@ -3,6 +3,9 @@
 POST /api/chat：以 text/event-stream 返回流式帧，
 并设置 Cache-Control: no-cache 与 X-Accel-Buffering: no 以避免代理缓冲。
 要求登录，会话归属一律取自登录态（见 specs/access-control/spec.md）。
+
+对话流正常结束后比对会话沙箱的指纹，有变化时留下一份版本快照，
+使「每轮自动快照」不依赖模型事件语义（见 design.md 决策 8）。
 """
 
 from __future__ import annotations
@@ -13,6 +16,7 @@ from fastapi.responses import StreamingResponse
 from app.api.auth import CurrentUser, current_user
 from app.schemas import ChatRequest
 from app.services import chat as chat_service
+from app.services import versions
 from app.services.runner import create_session, get_session
 
 router = APIRouter(prefix="/api", tags=["chat"])
@@ -22,6 +26,19 @@ SSE_HEADERS = {
     "X-Accel-Buffering": "no",
     "Connection": "keep-alive",
 }
+
+
+def snapshot_if_changed(request: Request, session_id: str) -> None:
+    """一轮对话的收尾动作：沙箱内容有变化时留下一个版本。
+
+    比对的是沙箱的可观测内容（文件清单 + 各文件哈希）而不是「本轮是否调用过写文件」，
+    因此删除文件、覆盖为空等情形同样会被记录下来。快照是收尾增强，
+    失败时只少留一个版本，不影响已经产出的回复。
+    """
+    try:
+        versions.snapshot_if_changed(session_id, request.app.state.settings)
+    except Exception:  # noqa: BLE001 - 落盘异常不应污染已完成的对话流
+        pass
 
 
 @router.post("/chat")
@@ -85,5 +102,8 @@ async def chat(
             message=message,
         ):
             yield f"data: {frame.model_dump_json()}\n\n"
+
+        # 完整帧已产出，本轮改动至此定型：按沙箱指纹留档（见 design.md 决策 8）
+        snapshot_if_changed(request, session_id)
 
     return StreamingResponse(event_stream(), media_type="text/event-stream", headers=SSE_HEADERS)

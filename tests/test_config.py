@@ -11,7 +11,7 @@ BASE_ENV = {
     "LLM_MODEL": "glm-4.5-flash",
     "LLM_API_KEY": "sk-test-1234567890",
     "APP_HOST": "127.0.0.1",
-    "APP_PORT": "8000",
+    "APP_PORT": "80",
     "SESSION_BACKEND": "memory",
 }
 
@@ -23,7 +23,7 @@ def test_full_config_is_loaded():
     assert settings.llm_model == "glm-4.5-flash"
     assert settings.llm_api_key == "sk-test-1234567890"
     assert settings.app_host == "127.0.0.1"
-    assert settings.app_port == 8000
+    assert settings.app_port == 80
     assert settings.session_backend == "memory"
 
 
@@ -53,6 +53,42 @@ def test_invalid_port_is_rejected():
         load_settings(env)
 
     assert excinfo.value.key == "APP_PORT"
+
+
+def test_port_defaults_to_eighty():
+    env = {k: v for k, v in BASE_ENV.items() if k != "APP_PORT"}
+
+    assert load_settings(env).app_port == 80
+
+
+def test_admin_credentials_default_to_none():
+    settings = load_settings(BASE_ENV)
+
+    assert settings.admin_username is None
+    assert settings.admin_password is None
+
+
+def test_admin_credentials_are_read_from_env():
+    settings = load_settings(
+        {**BASE_ENV, "ADMIN_USERNAME": "boss", "ADMIN_PASSWORD": "boss-pass-1"}
+    )
+
+    assert settings.admin_username == "boss"
+    assert settings.admin_password == "boss-pass-1"
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [("ADMIN_USERNAME", "ab"), ("ADMIN_PASSWORD", "x" * 21)],
+)
+def test_invalid_admin_credential_reports_the_key_name(key, value):
+    env = {**BASE_ENV, key: value}
+
+    with pytest.raises(ConfigError) as excinfo:
+        load_settings(env)
+
+    assert excinfo.value.key == key
+    assert key in str(excinfo.value)
 
 
 def test_workspace_quotas_fall_back_to_defaults():
@@ -94,6 +130,29 @@ def test_invalid_workspace_quota_reports_the_key_name(key, value):
 
     assert excinfo.value.key == key
     assert key in str(excinfo.value)
+
+
+def test_version_limit_defaults_to_twenty():
+    settings = load_settings(BASE_ENV)
+
+    assert settings.version_max_per_session == 20
+
+
+def test_version_limit_accepts_explicit_value():
+    settings = load_settings({**BASE_ENV, "VERSION_MAX_PER_SESSION": "5"})
+
+    assert settings.version_max_per_session == 5
+
+
+@pytest.mark.parametrize("value", ["0", "-2", "twenty"])
+def test_invalid_version_limit_reports_the_key_name(value):
+    env = {**BASE_ENV, "VERSION_MAX_PER_SESSION": value}
+
+    with pytest.raises(ConfigError) as excinfo:
+        load_settings(env)
+
+    assert excinfo.value.key == "VERSION_MAX_PER_SESSION"
+    assert "VERSION_MAX_PER_SESSION" in str(excinfo.value)
 
 
 def test_auth_cookie_secure_defaults_to_false():

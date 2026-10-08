@@ -11,7 +11,7 @@
   时账号依然持久化。
 - 密码只存 `pbkdf2_sha256$<迭代数>$<盐>$<哈希>`，校验用 `hmac.compare_digest()`。
 - 「普通用户 99 上限」的口径是 `role='user' AND source='self'` 的行数，
-  默认管理员（`system`）与管理员新增的账号（`admin`）不占名额。
+  内置管理员（`system`，首个管理员）与管理员新增的账号（`admin`）不占名额。
 - 失败一律抛出 AccountError 子类，消息为可直接展示给使用者的中文说明。
 """
 
@@ -29,7 +29,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator
 
-from app.config import PROJECT_ROOT
+from app.config import (
+    MAX_CREDENTIAL_LEN,
+    MIN_CREDENTIAL_LEN,
+    PROJECT_ROOT,
+    ConfigError,
+)
 
 # 账号库与会话库同层，data/ 已被 .gitignore 忽略
 USERS_DB_PATH = PROJECT_ROOT / "data" / "users.db"
@@ -41,13 +46,6 @@ ROLE_USER = "user"
 SOURCE_SYSTEM = "system"
 SOURCE_SELF = "self"
 SOURCE_ADMIN = "admin"
-
-DEFAULT_ADMIN_USERNAME = "root"
-DEFAULT_ADMIN_PASSWORD = "root"
-
-# 用户名与密码的长度约束（按去除首尾空白后的长度计）
-MIN_CREDENTIAL_LEN = 3
-MAX_CREDENTIAL_LEN = 20
 
 # 自助注册的普通用户上限
 MAX_SELF_REGISTERED_USERS = 99
@@ -194,18 +192,41 @@ class AccountService:
 
     # --- 初始数据 ---
 
-    def ensure_default_admin(self) -> bool:
-        """账号表为空时创建默认管理员 root/root；表非空则不做任何写入。"""
+    def ensure_admin(self, username: str | None, password: str | None) -> bool:
+        """账号库为空时用给定凭据创建首个管理员；库非空则不做任何写入。
+
+        凭据来自配置项 `ADMIN_USERNAME` / `ADMIN_PASSWORD`：首次启动（账号库为空）
+        必须提供，缺失或非法时抛出 ConfigError 并点名配置项，使启动直接失败。
+        库非空后这两项可以留空，已创建的管理员不会被覆盖、重置或重建。
+        """
         with self._transaction() as conn:
             total = conn.execute("SELECT COUNT(*) FROM accounts").fetchone()[0]
             if total:
                 return False
+            if not username:
+                raise ConfigError(
+                    "ADMIN_USERNAME",
+                    "缺失：账号库为空，需要用它指定首个管理员的用户名（写入 .env）",
+                )
+            if not password:
+                raise ConfigError(
+                    "ADMIN_PASSWORD",
+                    "缺失：账号库为空，需要用它指定首个管理员的密码（写入 .env）",
+                )
+            try:
+                username = validate_username(username)
+            except AccountError as exc:
+                raise ConfigError("ADMIN_USERNAME", str(exc)) from exc
+            try:
+                password = validate_password(password)
+            except AccountError as exc:
+                raise ConfigError("ADMIN_PASSWORD", str(exc)) from exc
             conn.execute(
                 "INSERT INTO accounts (username, password_hash, role, source, created_at)"
                 " VALUES (?, ?, ?, ?, ?)",
                 (
-                    DEFAULT_ADMIN_USERNAME,
-                    hash_password(DEFAULT_ADMIN_PASSWORD),
+                    username,
+                    hash_password(password),
                     ROLE_ADMIN,
                     SOURCE_SYSTEM,
                     time.time(),
@@ -332,7 +353,7 @@ class AccountService:
             conn.execute("DELETE FROM login_tokens WHERE username = ?", (username,))
 
     def delete_user(self, actor: Account, username: str) -> None:
-        """管理员删除用户；默认管理员（source='system'）不可删除。"""
+        """管理员删除用户；内置管理员（source='system'）不可删除，避免把自己锁在门外。"""
         _require_admin(actor)
         with self._transaction() as conn:
             row = conn.execute(

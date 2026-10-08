@@ -147,6 +147,68 @@ class AuthMessage(BaseModel):
     message: str
 
 
+# --- 应用版本 ---
+
+
+class VersionItem(BaseModel):
+    """一条版本记录。created_at 为 epoch 秒，由前端做本地化展示。"""
+
+    version_id: str
+    created_at: float
+
+
+class VersionListResponse(BaseModel):
+    session_id: str
+    versions: list[VersionItem]
+
+
+class RollbackResponse(BaseModel):
+    """回滚结果。preserved_version_id 为回滚前内容被留存成的版本（沙箱为空时为 None）。"""
+
+    session_id: str
+    version_id: str
+    preserved_version_id: str | None = None
+    message: str
+
+
+# --- 应用分享 ---
+
+
+class ShareCreateRequest(BaseModel):
+    """为某个版本生成公开只读分享。"""
+
+    version_id: str
+
+
+class ShareItem(BaseModel):
+    """一条分享记录。url 为可直接打开的相对地址。"""
+
+    token: str
+    version_id: str
+    created_at: float
+    url: str
+
+
+class ShareCreateResponse(BaseModel):
+    share: ShareItem
+    message: str
+
+
+class ShareListResponse(BaseModel):
+    shares: list[ShareItem]
+
+
+class ShareRevokeResponse(BaseModel):
+    token: str
+    message: str
+
+
+class ShareMessage(BaseModel):
+    """分享访问失败时的文字反馈（免登录路由不返回结构化错误）。"""
+
+    message: str
+
+
 # --- SSE 帧 ---
 
 

@@ -216,7 +216,7 @@ async def admin_delete_user(
     request: Request,
     admin: CurrentUser = Depends(require_admin),
 ) -> AuthMessage:
-    """管理员删除用户；默认管理员 `root` 不可删除。"""
+    """管理员删除用户；内置管理员（`source='system'`）不可删除。"""
     service = _service(request)
     try:
         service.delete_user(_actor(service, admin), username)

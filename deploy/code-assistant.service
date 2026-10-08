@@ -24,8 +24,12 @@ Environment=PYTHONUTF8=1
 
 # 必须单进程：RunnerService 在进程内持有 SqliteSessionService，
 # 多 worker 会并发写同一个 data/sessions.db（见 app/services/runner.py）。
-# 只监听 127.0.0.1，公网访问统一走 Nginx（见 deploy/nginx.conf）。
-ExecStart=/opt/atoms-demo/.venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 1
+# 只监听 127.0.0.1:80，公网访问统一走 Nginx（见 deploy/nginx.conf）。
+ExecStart=/opt/atoms-demo/.venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 80 --workers 1
+
+# 监听 80 属于特权端口：服务以 www-data 运行而非 root，需显式授予绑定低位端口的能力
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
 
 Restart=on-failure
 RestartSec=3

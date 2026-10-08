@@ -1,4 +1,4 @@
-// 前端逻辑：SSE 消费、Markdown 与代码块渲染、会话恢复与历史会话切换
+// 前端逻辑：对话生成网页应用、应用预览、版本回滚与分享，以及 SSE 消费与会话恢复
 
 const LANG_LABELS = {
   java: 'Java',
@@ -23,6 +23,10 @@ const LANG_EXTENSIONS = {
 // 记住当前会话，刷新页面后据此自动恢复历史
 const SESSION_STORAGE_KEY = 'code-assistant.session_id';
 const SESSION_ID_PLACEHOLDER = '新会话（尚未创建）';
+
+// 预览区占位文案：无会话、无入口文件、预览失败都从这里起步（见 tasks.md 4.3）
+const PREVIEW_EMPTY_TEXT =
+  '还没有可预览的应用。在左侧描述你想要的网页应用（例如「做一个俄罗斯方块小游戏」），生成后这里会显示它，并可以直接操作。';
 
 const els = {
   authApp: document.getElementById('auth-app'),
@@ -50,7 +54,6 @@ const els = {
   messages: document.getElementById('messages'),
   input: document.getElementById('input'),
   send: document.getElementById('send'),
-  language: document.getElementById('language'),
   newSession: document.getElementById('new-session'),
   downloadProject: document.getElementById('download-project'),
   historyToggle: document.getElementById('history-toggle'),
@@ -59,6 +62,22 @@ const els = {
   historyRefresh: document.getElementById('history-refresh'),
   status: document.getElementById('status'),
   sessionId: document.getElementById('session-id'),
+  previewFrame: document.getElementById('preview-frame'),
+  previewPlaceholder: document.getElementById('preview-placeholder'),
+  previewState: document.getElementById('preview-state'),
+  previewRefresh: document.getElementById('preview-refresh'),
+  versionsOpen: document.getElementById('versions-open'),
+  versionsModal: document.getElementById('versions-modal'),
+  versionsList: document.getElementById('versions-list'),
+  versionsClose: document.getElementById('versions-close'),
+  versionsTip: document.getElementById('versions-tip'),
+  shareOpen: document.getElementById('share-open'),
+  shareModal: document.getElementById('share-modal'),
+  shareVersion: document.getElementById('share-version'),
+  shareCreate: document.getElementById('share-create'),
+  shareList: document.getElementById('share-list'),
+  shareClose: document.getElementById('share-close'),
+  shareTip: document.getElementById('share-tip'),
 };
 
 let sessionId = null;
@@ -95,7 +114,8 @@ function restoreEmptyHint() {
   hint.className = 'empty';
   hint.id = 'empty-hint';
   hint.innerHTML =
-    '<p>描述你要实现的功能、粘贴一段待解释或待重构的代码、或贴上代码让助手排查问题。</p>';
+    '<p>描述你想要的网页应用，智能体会生成可运行的文件并在这里预览。</p>' +
+    '<p class="hint">示例：做一个俄罗斯方块小游戏；做一个能算账的记账页面；给这个应用加一个计分板。</p>';
   els.messages.appendChild(hint);
 }
 
@@ -346,11 +366,7 @@ async function send() {
     const response = await fetch('/api/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        message: text,
-        session_id: sessionId,
-        target_language: els.language.value || null,
-      }),
+      body: JSON.stringify({ message: text, session_id: sessionId }),
     });
 
     if (response.status === 401) {
@@ -397,6 +413,8 @@ async function send() {
       rememberSession(sessionId);
       await refreshHistoryList();
     }
+    // 一轮对话可能改动了沙箱，收尾后刷新预览让使用者立刻看到结果
+    await refreshPreview();
   } catch (err) {
     renderNow();
     showError(contentEl, `连接中断或服务端异常：${err.message}`);
@@ -443,6 +461,7 @@ function startNewSession() {
   setStatus('已新建会话');
   renderSessionId();
   highlightActiveSession();
+  refreshPreview();
   els.input.focus();
 }
 
@@ -610,6 +629,8 @@ async function switchSession(id) {
       return;
     }
     renderSessionId();
+    // 预览跟随当前会话切换（见 tasks.md 4.3）
+    await refreshPreview();
   }
   toggleHistory(false);
   await refreshHistoryList();
@@ -636,6 +657,395 @@ async function bootstrap() {
   }
   renderSessionId();
   await refreshHistoryList();
+  await refreshPreview();
+}
+
+// --- 应用预览（见 design.md 决策 3、9）---
+
+function previewUrl() {
+  return `/preview/${encodeURIComponent(sessionId)}/`;
+}
+
+function setPreviewState(text) {
+  els.previewState.textContent = text || '';
+}
+
+/** 展示占位说明并停掉 iframe，避免继续加载上一份应用。 */
+function showPreviewPlaceholder(text) {
+  els.previewFrame.hidden = true;
+  els.previewFrame.src = 'about:blank';
+  els.previewPlaceholder.hidden = false;
+  els.previewPlaceholder.textContent = text || PREVIEW_EMPTY_TEXT;
+}
+
+/** 把 iframe 指向入口页；带时间戳参数确保刷新按钮与回滚后重新加载。 */
+function loadPreviewFrame() {
+  els.previewPlaceholder.hidden = true;
+  els.previewFrame.hidden = false;
+  els.previewFrame.src = `${previewUrl()}?t=${Date.now()}`;
+}
+
+/** 退出登录或切换会话时把预览复位为初始占位。 */
+function resetPreview() {
+  setPreviewState('');
+  showPreviewPlaceholder(PREVIEW_EMPTY_TEXT);
+}
+
+/** 取响应体里的中文 detail，取不到时用兜底文案。 */
+async function readDetail(response, fallback) {
+  try {
+    const body = await response.json();
+    if (body && typeof body.detail === 'string') return body.detail;
+  } catch (err) {
+    /* 非 JSON 响应（例如分享页 HTML），用兜底文案 */
+  }
+  return fallback;
+}
+
+/**
+ * 刷新预览：先探一次入口页，据此区分「尚无应用」「加载失败」「登录态失效」，
+ * 再把 iframe 指过去（见 tasks.md 4.3）。
+ */
+async function refreshPreview() {
+  if (!sessionId) {
+    resetPreview();
+    return;
+  }
+
+  setPreviewState('正在加载…');
+  try {
+    const response = await fetch(previewUrl());
+    if (response.status === 401) {
+      // 登录态失效由集中出口处理，这里不再改预览文案
+      handleUnauthorized();
+      return;
+    }
+    if (response.status === 404) {
+      showPreviewPlaceholder(await readDetail(response, PREVIEW_EMPTY_TEXT));
+      setPreviewState('尚无应用');
+      return;
+    }
+    if (!response.ok) {
+      showPreviewPlaceholder('预览加载失败，请稍后点「刷新」重试。');
+      setPreviewState(`加载失败（HTTP ${response.status}）`);
+      return;
+    }
+    loadPreviewFrame();
+    setPreviewState('已加载，可直接在右侧操作');
+  } catch (err) {
+    showPreviewPlaceholder(`预览加载失败：${err.message}`);
+    setPreviewState('加载失败');
+  }
+}
+
+// --- 版本历史（见 design.md 决策 5、8）---
+
+/** 弹层里的提示：统一 error / ok 两种样式。 */
+function setTip(el, text, kind) {
+  el.textContent = text || '';
+  el.classList.toggle('error', kind === 'error');
+  el.classList.toggle('ok', kind === 'ok');
+}
+
+function versionLabel(versionId, isLatest) {
+  return `版本 ${versionId}${isLatest ? '（最新）' : ''}`;
+}
+
+/** 取当前会话的版本列表；失败时 versions 为 null 并带上中文原因。 */
+async function fetchVersions() {
+  const result = await requestJson(
+    'GET',
+    `/api/sessions/${encodeURIComponent(sessionId)}/versions`
+  );
+  if (result.status === 401) {
+    handleUnauthorized();
+    return { versions: null, message: '' };
+  }
+  if (!result.ok) {
+    return { versions: null, message: failureText(result, '版本列表载入失败') };
+  }
+  return { versions: (result.data && result.data.versions) || [], message: '' };
+}
+
+function listMessage(target, text, className) {
+  target.innerHTML = '';
+  const note = document.createElement('p');
+  note.className = className;
+  note.textContent = text;
+  target.appendChild(note);
+}
+
+function renderVersions(versions) {
+  els.versionsList.innerHTML = '';
+  if (!versions.length) {
+    listMessage(els.versionsList, '还没有版本：智能体改动了沙箱内容后会自动留档。', 'list-empty');
+    return;
+  }
+
+  versions.forEach((item, index) => {
+    const row = document.createElement('div');
+    row.className = 'list-item';
+
+    const meta = document.createElement('div');
+    meta.className = 'meta';
+    const title = document.createElement('span');
+    title.className = 'title';
+    title.textContent = versionLabel(item.version_id, index === 0);
+    const sub = document.createElement('span');
+    sub.className = 'sub';
+    sub.textContent = formatTime(item.created_at) || '时间未知';
+    meta.append(title, sub);
+
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'ghost';
+    button.textContent = '回滚到该版本';
+    button.addEventListener('click', () => rollbackTo(item.version_id, button));
+
+    row.append(meta, button);
+    els.versionsList.appendChild(row);
+  });
+}
+
+async function loadVersions() {
+  listMessage(els.versionsList, '正在载入版本…', 'list-empty');
+  const { versions, message } = await fetchVersions();
+  if (versions === null) {
+    els.versionsList.innerHTML = '';
+    if (message) setTip(els.versionsTip, message, 'error');
+    return;
+  }
+  renderVersions(versions);
+}
+
+async function rollbackTo(versionId, button) {
+  const confirmed = window.confirm(
+    `确认把当前应用回滚到版本 ${versionId}？\n回滚前的内容会留存为新版本，之后仍可回到回滚前。`
+  );
+  if (!confirmed) return;
+
+  button.disabled = true;
+  setTip(els.versionsTip, '正在回滚…');
+  try {
+    const result = await requestJson(
+      'POST',
+      `/api/sessions/${encodeURIComponent(sessionId)}/versions/${encodeURIComponent(
+        versionId
+      )}/rollback`,
+      {}
+    );
+    if (result.status === 401) {
+      handleUnauthorized();
+      return;
+    }
+    if (!result.ok) {
+      setTip(els.versionsTip, failureText(result, '回滚失败'), 'error');
+      return;
+    }
+    setTip(els.versionsTip, (result.data && result.data.message) || '已回滚。', 'ok');
+    setStatus('已回滚到所选版本，预览已刷新');
+    // 沙箱被整体替换，预览与版本列表都要重取
+    await refreshPreview();
+    await loadVersions();
+  } finally {
+    button.disabled = false;
+  }
+}
+
+function openVersionsModal() {
+  if (!sessionId) {
+    setStatus('还没有会话，先在对话中生成应用再查看版本');
+    return;
+  }
+  els.versionsModal.hidden = false;
+  setTip(els.versionsTip, '');
+  loadVersions();
+}
+
+function closeVersionsModal() {
+  els.versionsModal.hidden = true;
+  setTip(els.versionsTip, '');
+}
+
+// --- 应用分享（见 design.md 决策 6）---
+
+/** 把服务端给的相对地址补成完整链接，便于直接复制发送。 */
+function absoluteUrl(url) {
+  try {
+    return new URL(url, window.location.origin).href;
+  } catch (err) {
+    return url;
+  }
+}
+
+function renderShares(items) {
+  els.shareList.innerHTML = '';
+  if (!items.length) {
+    listMessage(els.shareList, '还没有为该会话创建过分享。', 'list-empty');
+    return;
+  }
+
+  items.forEach((item) => {
+    const row = document.createElement('div');
+    row.className = 'list-item';
+
+    const meta = document.createElement('div');
+    meta.className = 'meta';
+    const title = document.createElement('span');
+    title.className = 'title';
+    title.textContent = versionLabel(item.version_id, false);
+    const sub = document.createElement('span');
+    sub.className = 'sub';
+    sub.textContent = absoluteUrl(item.url);
+    sub.title = sub.textContent;
+    meta.append(title, sub);
+
+    const copy = document.createElement('button');
+    copy.type = 'button';
+    copy.className = 'ghost';
+    copy.textContent = '复制';
+    copy.addEventListener('click', async () => {
+      const ok = await copyText(absoluteUrl(item.url));
+      copy.textContent = ok ? '已复制' : '复制失败';
+      setTimeout(() => {
+        copy.textContent = '复制';
+      }, 1500);
+    });
+
+    const revoke = document.createElement('button');
+    revoke.type = 'button';
+    revoke.className = 'ghost';
+    revoke.textContent = '撤销';
+    revoke.addEventListener('click', () => revokeShare(item.token, revoke));
+
+    row.append(meta, copy, revoke);
+    els.shareList.appendChild(row);
+  });
+}
+
+async function loadShareVersions() {
+  const { versions, message } = await fetchVersions();
+  els.shareVersion.innerHTML = '';
+
+  if (versions === null || !versions.length) {
+    const option = document.createElement('option');
+    option.value = '';
+    option.textContent = '暂无可分享的版本';
+    els.shareVersion.appendChild(option);
+    els.shareVersion.disabled = true;
+    els.shareCreate.disabled = true;
+    setTip(
+      els.shareTip,
+      message || '还没有版本：智能体改动沙箱内容后会自动留档，之后即可分享。',
+      'error'
+    );
+    return;
+  }
+
+  versions.forEach((item, index) => {
+    const option = document.createElement('option');
+    option.value = item.version_id;
+    const time = formatTime(item.created_at);
+    option.textContent = `${versionLabel(item.version_id, index === 0)}${
+      time ? ` · ${time}` : ''
+    }`;
+    els.shareVersion.appendChild(option);
+  });
+  els.shareVersion.disabled = false;
+  els.shareCreate.disabled = false;
+}
+
+async function loadShares() {
+  const result = await requestJson(
+    'GET',
+    `/api/sessions/${encodeURIComponent(sessionId)}/shares`
+  );
+  if (result.status === 401) {
+    handleUnauthorized();
+    return;
+  }
+  if (!result.ok) {
+    els.shareList.innerHTML = '';
+    setTip(els.shareTip, failureText(result, '分享列表载入失败'), 'error');
+    return;
+  }
+  renderShares((result.data && result.data.shares) || []);
+}
+
+async function createShare() {
+  const versionId = els.shareVersion.value;
+  if (!versionId) {
+    setTip(els.shareTip, '请先选择一个版本。', 'error');
+    return;
+  }
+
+  els.shareCreate.disabled = true;
+  setTip(els.shareTip, '正在生成分享链接…');
+  try {
+    const result = await requestJson(
+      'POST',
+      `/api/sessions/${encodeURIComponent(sessionId)}/shares`,
+      { version_id: versionId }
+    );
+    if (result.status === 401) {
+      handleUnauthorized();
+      return;
+    }
+    if (!result.ok) {
+      setTip(els.shareTip, failureText(result, '生成分享链接失败'), 'error');
+      return;
+    }
+
+    const link = absoluteUrl(result.data.share.url);
+    const copied = await copyText(link);
+    const message = (result.data && result.data.message) || '已生成分享链接。';
+    setTip(els.shareTip, copied ? `${message}（链接已复制）` : `${message} 链接：${link}`, 'ok');
+    await loadShares();
+  } finally {
+    els.shareCreate.disabled = !els.shareVersion.value;
+  }
+}
+
+async function revokeShare(token, button) {
+  const confirmed = window.confirm('确认撤销该分享链接？撤销后原链接立即失效。');
+  if (!confirmed) return;
+
+  button.disabled = true;
+  setTip(els.shareTip, '正在撤销…');
+  try {
+    const result = await requestJson('DELETE', `/api/shares/${encodeURIComponent(token)}`);
+    if (result.status === 401) {
+      handleUnauthorized();
+      return;
+    }
+    if (!result.ok) {
+      setTip(els.shareTip, failureText(result, '撤销分享失败'), 'error');
+      return;
+    }
+    setTip(els.shareTip, (result.data && result.data.message) || '已撤销该分享链接。', 'ok');
+    await loadShares();
+  } finally {
+    button.disabled = false;
+  }
+}
+
+function openShareModal() {
+  if (!sessionId) {
+    setStatus('还没有会话，先在对话中生成应用再分享');
+    return;
+  }
+  els.shareModal.hidden = false;
+  setTip(els.shareTip, '');
+  listMessage(els.shareList, '正在载入分享…', 'list-empty');
+  // 版本下拉与分享列表互不依赖，并行取
+  loadShareVersions();
+  loadShares();
+}
+
+function closeShareModal() {
+  els.shareModal.hidden = true;
+  setTip(els.shareTip, '');
+  els.shareList.innerHTML = '';
 }
 
 // --- 认证 ---
@@ -673,6 +1083,9 @@ function showAuth(tip) {
   currentUsername = '';
   forgetStoredSession();
   closePasswordModal();
+  closeVersionsModal();
+  closeShareModal();
+  resetPreview();
   els.chatApp.hidden = true;
   els.authApp.hidden = false;
   setAuthTip(tip || '');
@@ -699,14 +1112,12 @@ function handleUnauthorized() {
   showAuth(UNAUTHORIZED_TIP);
 }
 
-/** 提交 JSON 并统一取出 detail；网络异常也归一化为失败结果。 */
-async function postJson(path, body) {
+/** 统一请求：取出 detail，网络异常也归一化为失败结果；DELETE / GET 共用同一出口。 */
+async function requestJson(method, path, body) {
+  const options = { method, headers: { 'Content-Type': 'application/json' } };
+  if (body !== undefined) options.body = JSON.stringify(body);
   try {
-    const response = await fetch(path, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body || {}),
-    });
+    const response = await fetch(path, options);
     let data = null;
     try {
       data = await response.json();
@@ -718,6 +1129,10 @@ async function postJson(path, body) {
   } catch (err) {
     return { ok: false, status: 0, data: null, detail: `无法连接到服务：${err.message}` };
   }
+}
+
+function postJson(path, body) {
+  return requestJson('POST', path, body || {});
 }
 
 function failureText(result, fallback) {
@@ -878,10 +1293,18 @@ function bindEvents() {
   els.historyRefresh.addEventListener('click', refreshHistoryList);
   els.historyPanel.addEventListener('click', (event) => event.stopPropagation());
   document.addEventListener('click', () => toggleHistory(false));
+  els.previewRefresh.addEventListener('click', refreshPreview);
+  els.versionsOpen.addEventListener('click', openVersionsModal);
+  els.versionsClose.addEventListener('click', closeVersionsModal);
+  els.shareOpen.addEventListener('click', openShareModal);
+  els.shareCreate.addEventListener('click', createShare);
+  els.shareClose.addEventListener('click', closeShareModal);
   document.addEventListener('keydown', (event) => {
     if (event.key !== 'Escape') return;
     toggleHistory(false);
     if (!els.passwordModal.hidden) closePasswordModal();
+    if (!els.versionsModal.hidden) closeVersionsModal();
+    if (!els.shareModal.hidden) closeShareModal();
   });
   els.input.addEventListener('keydown', (event) => {
     if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {

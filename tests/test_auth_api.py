@@ -15,15 +15,16 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.api import auth as auth_api
+from app.config import ConfigError
 from app.services import accounts
 from app.services.accounts import (
-    DEFAULT_ADMIN_USERNAME,
     ROLE_ADMIN,
     ROLE_USER,
     SOURCE_SYSTEM,
     AccountService,
 )
 
+ADMIN_USERNAME = "root"
 ADMIN_PASSWORD = "root"
 
 
@@ -35,7 +36,7 @@ def fast_hashing(monkeypatch):
 @pytest.fixture
 def service(tmp_path):
     instance = AccountService(tmp_path / "users.db")
-    instance.ensure_default_admin()
+    instance.ensure_admin(ADMIN_USERNAME, ADMIN_PASSWORD)
     return instance
 
 
@@ -221,7 +222,7 @@ def test_change_password_requires_login(client):
 
 def admin_client(service):
     instance = make_client(service)
-    login(instance, DEFAULT_ADMIN_USERNAME, ADMIN_PASSWORD)
+    login(instance, ADMIN_USERNAME, ADMIN_PASSWORD)
     return instance
 
 
@@ -246,11 +247,11 @@ def test_admin_can_create_reset_and_delete_user(service):
 def test_admin_cannot_delete_root(service):
     admin = admin_client(service)
 
-    response = admin.delete(f"/api/auth/users/{DEFAULT_ADMIN_USERNAME}")
+    response = admin.delete(f"/api/auth/users/{ADMIN_USERNAME}")
 
     assert response.status_code == 400
     assert "默认管理员" in response.json()["detail"]
-    assert service.get_account(DEFAULT_ADMIN_USERNAME).source == SOURCE_SYSTEM
+    assert service.get_account(ADMIN_USERNAME).source == SOURCE_SYSTEM
 
 
 def test_ordinary_user_is_rejected_by_admin_endpoints(service):
@@ -290,7 +291,7 @@ def test_admin_role_is_reported_in_identity(service):
     admin = admin_client(service)
 
     assert admin.get("/api/auth/me").json() == {
-        "username": DEFAULT_ADMIN_USERNAME,
+        "username": ADMIN_USERNAME,
         "role": ROLE_ADMIN,
     }
 
@@ -298,16 +299,7 @@ def test_admin_role_is_reported_in_identity(service):
 # --- 3.4 应用装配 ---
 
 
-def test_app_wires_auth_router_and_initializes_default_admin(tmp_path, monkeypatch):
-    """认证路由应在静态前端之前挂载；启动后账号库中存在默认管理员 root。"""
-    from app import main as main_module
-
-    db_path = tmp_path / "users.db"
-    monkeypatch.setattr(main_module, "AccountService", lambda: AccountService(db_path))
-    monkeypatch.setattr(
-        main_module, "get_settings", lambda: SimpleNamespace(auth_cookie_secure=False)
-    )
-
+def _stub_runner(monkeypatch, main_module):
     class StubRunnerService:
         """替代真实 Runner，让 lifespan 不必连模型也能跑通。"""
 
@@ -319,6 +311,24 @@ def test_app_wires_auth_router_and_initializes_default_admin(tmp_path, monkeypat
             return None
 
     monkeypatch.setattr(main_module, "RunnerService", StubRunnerService)
+
+
+def test_app_wires_auth_router_and_initializes_admin(tmp_path, monkeypatch):
+    """认证路由应在静态前端之前挂载；启动时用 ADMIN_* 配置创建首个管理员。"""
+    from app import main as main_module
+
+    db_path = tmp_path / "users.db"
+    monkeypatch.setattr(main_module, "AccountService", lambda: AccountService(db_path))
+    monkeypatch.setattr(
+        main_module,
+        "get_settings",
+        lambda: SimpleNamespace(
+            auth_cookie_secure=False,
+            admin_username=ADMIN_USERNAME,
+            admin_password=ADMIN_PASSWORD,
+        ),
+    )
+    _stub_runner(monkeypatch, main_module)
 
     app = main_module.create_app()
     paths = set(app.openapi()["paths"])
@@ -337,4 +347,29 @@ def test_app_wires_auth_router_and_initializes_default_admin(tmp_path, monkeypat
     with TestClient(app) as client:
         assert client.get("/api/auth/me").status_code == 401  # lifespan 已执行且无登录态
 
-    assert AccountService(db_path).get_account(DEFAULT_ADMIN_USERNAME) is not None
+    assert AccountService(db_path).get_account(ADMIN_USERNAME) is not None
+
+
+def test_startup_fails_when_the_store_is_empty_and_admin_credentials_are_missing(
+    tmp_path, monkeypatch
+):
+    """账号库为空且未配置 ADMIN_* 时启动失败，并点名缺失的配置项。"""
+    from app import main as main_module
+
+    db_path = tmp_path / "users.db"
+    monkeypatch.setattr(main_module, "AccountService", lambda: AccountService(db_path))
+    monkeypatch.setattr(
+        main_module,
+        "get_settings",
+        lambda: SimpleNamespace(
+            auth_cookie_secure=False, admin_username=None, admin_password=None
+        ),
+    )
+    _stub_runner(monkeypatch, main_module)
+
+    app = main_module.create_app()
+    with pytest.raises(ConfigError) as excinfo:
+        with TestClient(app):
+            pass
+
+    assert excinfo.value.key == "ADMIN_USERNAME"

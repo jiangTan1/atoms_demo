@@ -16,7 +16,7 @@ AGENT_NAME = "code_assistant"
 
 root_agent = LlmAgent(
     name=AGENT_NAME,
-    description="面向开发者的代码助手：代码生成、代码解释、重构与优化。",
+    description="网页应用生成智能体：根据自然语言需求生成与迭代修改可直接运行的网页应用。",
     model=build_model(get_settings()),
     instruction=build_instruction(),
     tools=list(FILE_TOOLS),

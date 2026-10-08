@@ -12,10 +12,9 @@ import time
 
 import pytest
 
+from app.config import ConfigError
 from app.services import accounts
 from app.services.accounts import (
-    DEFAULT_ADMIN_PASSWORD,
-    DEFAULT_ADMIN_USERNAME,
     MAX_SELF_REGISTERED_USERS,
     ROLE_ADMIN,
     ROLE_USER,
@@ -29,6 +28,10 @@ from app.services.accounts import (
     hash_password,
     verify_password,
 )
+
+# 首个管理员的凭据来自配置项 ADMIN_USERNAME / ADMIN_PASSWORD，测试里用固定的等价取值
+ADMIN_USERNAME = "root"
+ADMIN_PASSWORD = "root"
 
 
 @pytest.fixture(autouse=True)
@@ -44,8 +47,8 @@ def service(tmp_path):
 
 @pytest.fixture
 def admin(service):
-    service.ensure_default_admin()
-    return service.get_account(DEFAULT_ADMIN_USERNAME)
+    service.ensure_admin(ADMIN_USERNAME, ADMIN_PASSWORD)
+    return service.get_account(ADMIN_USERNAME)
 
 
 def read_hash(db_path, username):
@@ -75,12 +78,12 @@ def add_self_registered(service, username, password="pass-123"):
 def test_schema_creation_is_idempotent(tmp_path):
     db_path = tmp_path / "users.db"
     first = AccountService(db_path)
-    first.ensure_default_admin()
+    first.ensure_admin(ADMIN_USERNAME, ADMIN_PASSWORD)
 
     second = AccountService(db_path)  # 重复初始化不报错
-    second.ensure_default_admin()
+    second.ensure_admin(ADMIN_USERNAME, ADMIN_PASSWORD)
 
-    assert second.get_account(DEFAULT_ADMIN_USERNAME) is not None
+    assert second.get_account(ADMIN_USERNAME) is not None
     conn = sqlite3.connect(db_path)
     try:
         total = conn.execute("SELECT COUNT(*) FROM accounts").fetchone()[0]
@@ -111,11 +114,11 @@ def test_tables_and_columns_are_created(service):
 def test_existing_rows_survive_reinitialization(tmp_path):
     db_path = tmp_path / "users.db"
     service = AccountService(db_path)
-    service.ensure_default_admin()
+    service.ensure_admin(ADMIN_USERNAME, ADMIN_PASSWORD)
 
     AccountService(db_path)  # 再次打开同一库
 
-    assert service.get_account(DEFAULT_ADMIN_USERNAME).role == ROLE_ADMIN
+    assert service.get_account(ADMIN_USERNAME).role == ROLE_ADMIN
 
 
 # --- 1.3 密码哈希与校验 ---
@@ -147,43 +150,58 @@ def test_malformed_stored_hash_is_rejected():
     assert verify_password("whatever", "not-a-valid-hash") is False
 
 
-# --- 1.4 默认管理员初始化 ---
+# --- 1.4 首个管理员初始化 ---
 
 
 def test_default_admin_is_created_on_empty_store(service):
-    created = service.ensure_default_admin()
+    created = service.ensure_admin(ADMIN_USERNAME, ADMIN_PASSWORD)
 
-    account = service.get_account(DEFAULT_ADMIN_USERNAME)
+    account = service.get_account(ADMIN_USERNAME)
     assert created is True
     assert account is not None
     assert account.role == ROLE_ADMIN
     assert account.source == SOURCE_SYSTEM
-    assert verify_password(DEFAULT_ADMIN_PASSWORD, read_hash(service.db_path, "root"))
+    assert verify_password(ADMIN_PASSWORD, read_hash(service.db_path, ADMIN_USERNAME))
+
+
+def test_missing_admin_credentials_fail_with_the_config_key(service):
+    with pytest.raises(ConfigError) as excinfo:
+        service.ensure_admin(None, None)
+
+    assert excinfo.value.key == "ADMIN_USERNAME"
+    assert service.get_account(ADMIN_USERNAME) is None
+
+
+def test_missing_admin_password_fails_with_the_config_key(service):
+    with pytest.raises(ConfigError) as excinfo:
+        service.ensure_admin(ADMIN_USERNAME, None)
+
+    assert excinfo.value.key == "ADMIN_PASSWORD"
 
 
 def test_existing_accounts_are_not_overwritten(tmp_path):
     db_path = tmp_path / "users.db"
     service = AccountService(db_path)
-    service.ensure_default_admin()
+    service.ensure_admin(ADMIN_USERNAME, ADMIN_PASSWORD)
 
-    # 模拟使用者已改过 root 密码
+    # 模拟使用者已改过首个管理员的密码
     changed = hash_password("changed-password")
     conn = sqlite3.connect(db_path)
     try:
         conn.execute(
             "UPDATE accounts SET password_hash = ? WHERE username = ?",
-            (changed, DEFAULT_ADMIN_USERNAME),
+            (changed, ADMIN_USERNAME),
         )
         conn.commit()
     finally:
         conn.close()
 
-    created = service.ensure_default_admin()
+    created = service.ensure_admin(ADMIN_USERNAME, ADMIN_PASSWORD)
 
     assert created is False
-    current = read_hash(db_path, DEFAULT_ADMIN_USERNAME)
+    current = read_hash(db_path, ADMIN_USERNAME)
     assert verify_password("changed-password", current)
-    assert not verify_password(DEFAULT_ADMIN_PASSWORD, current)
+    assert not verify_password(ADMIN_PASSWORD, current)
 
 
 def test_non_default_admin_account_blocks_initialization(tmp_path):
@@ -196,10 +214,10 @@ def test_non_default_admin_account_blocks_initialization(tmp_path):
             ("alice", hash_password("alice-1"), ROLE_USER, SOURCE_SELF),
         )
 
-    created = service.ensure_default_admin()
+    created = service.ensure_admin(ADMIN_USERNAME, ADMIN_PASSWORD)
 
     assert created is False
-    assert service.get_account(DEFAULT_ADMIN_USERNAME) is None
+    assert service.get_account(ADMIN_USERNAME) is None
 
 
 # --- 2.1 格式约束 ---
@@ -368,10 +386,10 @@ def test_admin_can_delete_user(admin, service):
 
 def test_default_admin_cannot_be_deleted(admin, service):
     with pytest.raises(AccountError) as excinfo:
-        service.delete_user(admin, DEFAULT_ADMIN_USERNAME)
+        service.delete_user(admin, ADMIN_USERNAME)
 
     assert "默认管理员" in str(excinfo.value)
-    assert service.get_account(DEFAULT_ADMIN_USERNAME) is not None
+    assert service.get_account(ADMIN_USERNAME) is not None
 
 
 def test_ordinary_user_cannot_use_the_admin_operations(service):

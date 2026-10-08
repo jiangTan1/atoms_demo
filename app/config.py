@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
 from typing import Mapping
@@ -31,6 +31,14 @@ PLACEHOLDER_VALUES = frozenset({"replace-me", "replace_me", "your-api-key", "cha
 
 SESSION_BACKENDS = ("memory", "sqlite")
 
+# 用户名与密码的长度约束：配置层与账号服务共用，避免两处各写一份
+MIN_CREDENTIAL_LEN = 3
+MAX_CREDENTIAL_LEN = 20
+
+# 首个管理员的凭据通过这两个配置项提供，只在「账号库为空」的首次启动时被使用
+ADMIN_USERNAME_KEY = "ADMIN_USERNAME"
+ADMIN_PASSWORD_KEY = "ADMIN_PASSWORD"
+
 # 会话默认落盘：页面刷新与服务重启后仍能找回历史对话
 DEFAULT_SESSION_BACKEND = "sqlite"
 
@@ -39,6 +47,10 @@ DEFAULT_SESSION_BACKEND = "sqlite"
 DEFAULT_WORKSPACE_MAX_FILE_BYTES = 262144
 DEFAULT_WORKSPACE_MAX_FILES = 200
 DEFAULT_WORKSPACE_MAX_TOTAL_BYTES = 10485760
+
+# 单会话保留的版本快照上限（见 specs/app-versions/spec.md 的「版本存储有界」）：
+# 超过上限时按最旧优先清理，使版本占用不会无界增长
+DEFAULT_VERSION_MAX_PER_SESSION = 20
 
 # 登录态 Cookie 是否带 Secure（见 specs/access-control/spec.md 的「登录与登录态」）：
 # 默认 false 以便本机与内网 HTTP 演示；部署到 HTTPS 后置为 true
@@ -71,7 +83,10 @@ class Settings:
     workspace_max_file_bytes: int
     workspace_max_files: int
     workspace_max_total_bytes: int
+    version_max_per_session: int
     auth_cookie_secure: bool
+    admin_username: str | None
+    admin_password: str | None = field(repr=False)
 
     @property
     def api_base(self) -> str:
@@ -101,7 +116,7 @@ def _validate_base_url(value: str) -> str:
 
 
 def _validate_port(env: Mapping[str, str]) -> int:
-    raw = (env.get("APP_PORT") or "").strip() or "8000"
+    raw = (env.get("APP_PORT") or "").strip() or "80"
     try:
         port = int(raw)
     except ValueError:
@@ -146,6 +161,24 @@ def _bool_flag(env: Mapping[str, str], key: str, default: bool) -> bool:
     raise ConfigError(key, f"不是合法布尔值：{raw!r}，可选 true / false")
 
 
+def _admin_credential(env: Mapping[str, str], key: str) -> str | None:
+    """读取可选的首个管理员凭据。
+
+    缺省返回 None：是否「必须提供」取决于账号库是否为空，由账号服务在首次启动时判定，
+    因此配置层不在此处强制必填。一旦填写就在这里校验长度，非法取值启动即失败并点名配置项。
+    """
+    raw = (env.get(key) or "").strip()
+    if not raw:
+        return None
+    if not MIN_CREDENTIAL_LEN <= len(raw) <= MAX_CREDENTIAL_LEN:
+        raise ConfigError(
+            key,
+            f"长度需为 {MIN_CREDENTIAL_LEN} 到 {MAX_CREDENTIAL_LEN} 个字符，"
+            f"当前为 {len(raw)} 个字符",
+        )
+    return raw
+
+
 def load_settings(env: Mapping[str, str] | None = None) -> Settings:
     """读取并校验配置；env 为 None 时先加载 .env 再读进程环境变量。"""
     if env is None:
@@ -167,9 +200,14 @@ def load_settings(env: Mapping[str, str] | None = None) -> Settings:
         workspace_max_total_bytes=_positive_int(
             env, "WORKSPACE_MAX_TOTAL_BYTES", DEFAULT_WORKSPACE_MAX_TOTAL_BYTES
         ),
+        version_max_per_session=_positive_int(
+            env, "VERSION_MAX_PER_SESSION", DEFAULT_VERSION_MAX_PER_SESSION
+        ),
         auth_cookie_secure=_bool_flag(
             env, "AUTH_COOKIE_SECURE", DEFAULT_AUTH_COOKIE_SECURE
         ),
+        admin_username=_admin_credential(env, ADMIN_USERNAME_KEY),
+        admin_password=_admin_credential(env, ADMIN_PASSWORD_KEY),
     )
 
 

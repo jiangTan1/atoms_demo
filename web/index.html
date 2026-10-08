@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>代码辅助智能体</title>
+  <title>网页应用生成智能体</title>
   <link rel="stylesheet" href="/styles.css" />
   <link rel="stylesheet"
         href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github.min.css" />
@@ -15,8 +15,8 @@
   <div class="auth" id="auth-app">
     <div class="auth-card">
       <div class="auth-head">
-        <span class="brand-title">代码辅助智能体</span>
-        <span class="brand-sub">代码生成 · 代码解释 · 重构优化 · 缺陷排查</span>
+        <span class="brand-title">网页应用生成智能体</span>
+        <span class="brand-sub">对话生成网页应用 · 即时预览 · 版本回滚 · 分享</span>
       </div>
 
       <div class="auth-modes">
@@ -49,25 +49,17 @@
   <div class="app" id="chat-app" hidden>
     <header class="topbar">
       <div class="brand">
-        <span class="brand-title">代码辅助智能体</span>
-        <span class="brand-sub">代码生成 · 代码解释 · 重构优化 · 缺陷排查</span>
+        <span class="brand-title">网页应用生成智能体</span>
+        <span class="brand-sub">描述需求即生成可运行的网页应用，可预览、改版、回滚与分享</span>
       </div>
       <div class="controls">
-        <label class="field">
-          <span>目标语言</span>
-          <select id="language">
-            <option value="">自动推断</option>
-            <option value="java">Java</option>
-            <option value="python">Python</option>
-            <option value="csharp">C#</option>
-            <option value="cpp">C++</option>
-            <option value="html">HTML</option>
-            <option value="javascript">JavaScript</option>
-          </select>
-        </label>
         <button id="history-toggle" type="button" class="ghost"
                 aria-expanded="false" aria-controls="history-panel">历史会话</button>
         <button id="new-session" type="button" class="ghost">新建会话</button>
+        <button id="versions-open" type="button" class="ghost"
+                title="查看该会话的应用版本并回滚">版本</button>
+        <button id="share-open" type="button" class="ghost"
+                title="为某个版本生成公开只读分享链接">分享</button>
         <button id="download-project" type="button" class="ghost"
                 title="把当前会话生成的全部文件打包下载">下载整个项目</button>
         <span id="session-id" class="session-id" title="当前还没有会话 ID">新会话（尚未创建）</span>
@@ -85,15 +77,34 @@
       </div>
     </header>
 
-    <main id="messages" class="messages" aria-live="polite">
-      <div class="empty" id="empty-hint">
-        <p>描述你要实现的功能、粘贴一段待解释或待重构的代码、或贴上代码让助手排查问题。</p>
-        <p class="hint">示例：用 Java 写一个线程安全的单例；解释这段 Python 的装饰器；这段 C# 代码有什么 bug。</p>
-      </div>
-    </main>
+    <div class="workspace">
+      <main id="messages" class="messages" aria-live="polite">
+        <div class="empty" id="empty-hint">
+          <p>描述你想要的网页应用，智能体会生成可运行的文件并在这里预览。</p>
+          <p class="hint">示例：做一个俄罗斯方块小游戏；做一个能算账的记账页面；给这个应用加一个计分板。</p>
+        </div>
+      </main>
+
+      <section class="preview" aria-label="应用预览">
+        <div class="preview-head">
+          <span class="preview-title">应用预览</span>
+          <span id="preview-state" class="preview-state" role="status"></span>
+          <button id="preview-refresh" type="button" class="code-copy">刷新</button>
+        </div>
+        <div class="preview-body">
+          <iframe id="preview-frame" class="preview-frame" hidden
+                  sandbox="allow-scripts allow-forms allow-modals allow-popups allow-pointer-lock"
+                  referrerpolicy="no-referrer" title="当前会话应用的预览"></iframe>
+          <p id="preview-placeholder" class="preview-placeholder">
+            还没有可预览的应用。在左侧描述你想要的网页应用（例如「做一个俄罗斯方块小游戏」），
+            生成后这里会显示它，并可以直接操作。
+          </p>
+        </div>
+      </section>
+    </div>
 
     <footer class="composer">
-      <textarea id="input" rows="3" placeholder="输入问题，Ctrl + Enter 发送"></textarea>
+      <textarea id="input" rows="3" placeholder="描述你想要的网页应用，Ctrl + Enter 发送"></textarea>
       <div class="composer-actions">
         <span id="status" class="status"></span>
         <button id="send" type="button" class="primary">发送</button>
@@ -121,6 +132,41 @@
         </div>
       </form>
       <p id="password-tip" class="auth-tip" role="status"></p>
+    </div>
+  </div>
+
+  <div class="modal" id="versions-modal" hidden>
+    <div class="modal-card wide" role="dialog" aria-modal="true"
+         aria-labelledby="versions-modal-title">
+      <span class="brand-title" id="versions-modal-title">版本历史</span>
+      <p class="modal-note">
+        每轮对话改动沙箱内容后自动留档。回滚前会先把当前内容留存为新版本，因此随时可以回到回滚前。
+      </p>
+      <div id="versions-list" class="list"></div>
+      <div class="auth-actions">
+        <button id="versions-close" type="button" class="ghost">关闭</button>
+      </div>
+      <p id="versions-tip" class="auth-tip" role="status"></p>
+    </div>
+  </div>
+
+  <div class="modal" id="share-modal" hidden>
+    <div class="modal-card wide" role="dialog" aria-modal="true"
+         aria-labelledby="share-modal-title">
+      <span class="brand-title" id="share-modal-title">分享应用</span>
+      <p class="modal-note">
+        为选中的版本生成公开只读链接：任何人无需登录即可打开该版本的应用，但不能修改、下载或看到会话信息。
+      </p>
+      <label class="field stacked" for="share-version">
+        <span>选择版本</span>
+        <select id="share-version"></select>
+      </label>
+      <div class="auth-actions">
+        <button id="share-create" type="button" class="primary">生成分享链接</button>
+        <button id="share-close" type="button" class="ghost">关闭</button>
+      </div>
+      <div id="share-list" class="list"></div>
+      <p id="share-tip" class="auth-tip" role="status"></p>
     </div>
   </div>
 

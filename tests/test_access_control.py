@@ -104,7 +104,7 @@ def app(tmp_path, monkeypatch, session_service, runner):
     monkeypatch.setattr(workspace, "WORKSPACE_ROOT", tmp_path / "workspace")
 
     accounts_service = AccountService(tmp_path / "users.db")
-    accounts_service.ensure_default_admin()
+    accounts_service.ensure_admin("root", "root")
 
     application = FastAPI()
     application.state.settings = SimpleNamespace(auth_cookie_secure=False)

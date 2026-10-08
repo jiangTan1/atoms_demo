@@ -267,3 +267,145 @@ def test_zip_contains_only_requested_session(sandbox):
 
     with zipfile.ZipFile(io.BytesIO(data)) as archive:
         assert archive.namelist() == ["a.py"]
+
+
+# --- 2.7 应用入口定位（见 specs/file-workspace/spec.md）---
+
+
+def test_entry_path_finds_index_html(sandbox):
+    workspace.write_file("session-a", "index.html", "<h1>hi</h1>")
+
+    entry = workspace.entry_path("session-a")
+
+    assert entry is not None
+    assert entry.name == "index.html"
+    assert entry.read_text(encoding="utf-8") == "<h1>hi</h1>"
+
+
+def test_entry_path_returns_none_without_entry(sandbox):
+    workspace.write_file("session-a", "main.py", "print(1)")
+
+    assert workspace.entry_path("session-a") is None
+
+
+def test_entry_path_returns_none_for_empty_sandbox(sandbox):
+    assert workspace.entry_path("session-empty") is None
+
+
+def test_entry_path_ignores_symlink_escaping_the_sandbox(sandbox, tmp_path):
+    outside = tmp_path / "outside-index.html"
+    outside.write_text("secret", encoding="utf-8")
+
+    base = workspace.workspace_dir("session-a")
+    base.mkdir(parents=True, exist_ok=True)
+    if not try_symlink(base / "index.html", outside):
+        pytest.skip("当前环境不允许创建符号链接")
+
+    assert workspace.entry_path("session-a") is None
+
+
+# --- 2.8 静态资源按路径取用（见 specs/file-workspace/spec.md）---
+
+
+def test_read_asset_returns_entry_page_and_content_type(sandbox):
+    workspace.write_file("session-a", "index.html", "<!doctype html><h1>hi</h1>")
+
+    content, content_type = workspace.read_asset("session-a", "index.html")
+
+    assert content.decode("utf-8") == "<!doctype html><h1>hi</h1>"
+    assert content_type.startswith("text/html")
+
+
+def test_read_asset_serves_nested_style_and_script(sandbox):
+    workspace.write_file("session-a", "assets/style.css", "body{color:red}")
+    workspace.write_file("session-a", "src/app.js", "console.log(1)")
+
+    css, css_type = workspace.read_asset("session-a", "assets/style.css")
+    js, js_type = workspace.read_asset("session-a", "src/app.js")
+
+    assert css.decode("utf-8") == "body{color:red}"
+    assert css_type.startswith("text/css")
+    assert js.decode("utf-8") == "console.log(1)"
+    assert js_type.startswith("text/javascript")
+
+
+@pytest.mark.parametrize("path", ["/etc/passwd", "../outside.txt", "assets/../../x.txt"])
+def test_read_asset_rejects_escaping_paths(sandbox, path):
+    with pytest.raises(workspace.WorkspaceError):
+        workspace.read_asset("session-a", path)
+
+
+def test_read_asset_rejects_symlink_escape(sandbox, tmp_path):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "secret.txt").write_text("secret", encoding="utf-8")
+
+    base = workspace.workspace_dir("session-a")
+    base.mkdir(parents=True, exist_ok=True)
+    if not try_symlink(base / "link", outside):
+        pytest.skip("当前环境不允许创建符号链接")
+
+    with pytest.raises(workspace.WorkspaceError):
+        workspace.read_asset("session-a", "link/secret.txt")
+
+
+@pytest.mark.parametrize("path", [".env", ".git/config", "assets/.hidden.js"])
+def test_read_asset_rejects_hidden_files(sandbox, path):
+    workspace.write_file("session-a", path, "secret")
+
+    with pytest.raises(workspace.WorkspaceError):
+        workspace.read_asset("session-a", path)
+
+
+# --- 2.9 快照与恢复（见 specs/file-workspace/spec.md）---
+
+
+def test_snapshot_is_decoupled_from_later_changes(sandbox, tmp_path):
+    workspace.write_file("session-a", "index.html", "v1")
+    snap = tmp_path / "snap" / "0001"
+    workspace.snapshot("session-a", snap)
+
+    workspace.write_file("session-a", "index.html", "v2")
+
+    assert (snap / "index.html").read_text(encoding="utf-8") == "v1"
+    assert workspace.read_file("session-a", "index.html") == "v2"
+
+
+def test_restore_rebuilds_sandbox_exactly(sandbox, tmp_path):
+    workspace.write_file("session-a", "index.html", "v1")
+    workspace.write_file("session-a", "keep.js", "keep")
+    snap = tmp_path / "snap" / "0001"
+    workspace.snapshot("session-a", snap)
+
+    workspace.delete_file("session-a", "keep.js")
+    workspace.write_file("session-a", "extra.js", "extra")
+
+    workspace.restore("session-a", snap)
+
+    assert sorted(workspace.list_files("session-a")) == ["index.html", "keep.js"]
+    assert workspace.read_file("session-a", "index.html") == "v1"
+    assert workspace.read_file("session-a", "keep.js") == "keep"
+
+
+def test_restore_keeps_pre_restore_content(sandbox, tmp_path):
+    workspace.write_file("session-a", "index.html", "v1")
+    snap = tmp_path / "snap" / "0001"
+    workspace.snapshot("session-a", snap)
+    workspace.write_file("session-a", "index.html", "v2")
+
+    preserved = tmp_path / "snap" / "0002"
+    workspace.restore("session-a", snap, keep=preserved)
+
+    assert workspace.read_file("session-a", "index.html") == "v1"
+    assert (preserved / "index.html").read_text(encoding="utf-8") == "v2"
+
+
+def test_snapshot_only_touches_its_own_session(sandbox, tmp_path):
+    workspace.write_file("session-a", "a.html", "a")
+    workspace.write_file("session-b", "b.html", "b")
+    snap = tmp_path / "snap" / "0001"
+
+    workspace.snapshot("session-a", snap)
+    workspace.restore("session-a", snap)
+
+    assert workspace.list_files("session-b") == ["b.html"]
