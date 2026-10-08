@@ -660,10 +660,16 @@ async function bootstrap() {
   await refreshPreview();
 }
 
-// --- 应用预览（见 design.md 决策 3、9）---
+// --- 应用预览（见 design.md 决策 3、9、11）---
 
-function previewUrl() {
-  return `/preview/${encodeURIComponent(sessionId)}/`;
+/**
+ * 预览入口地址来自服务端签发的票据（`/preview/<会话>/<票据>/`）。
+ * 票据必须放在路径里：预览 iframe 处在不透明源，子资源请求不带登录态 Cookie，
+ * 靠 Cookie 取用会被 401 拒绝并被浏览器 ORB 拦掉；相对路径继承同前缀的票据后，
+ * 样式与脚本无需 Cookie 即可加载。
+ */
+function previewTokenUrl() {
+  return `/api/sessions/${encodeURIComponent(sessionId)}/preview-token`;
 }
 
 function setPreviewState(text) {
@@ -679,10 +685,10 @@ function showPreviewPlaceholder(text) {
 }
 
 /** 把 iframe 指向入口页；带时间戳参数确保刷新按钮与回滚后重新加载。 */
-function loadPreviewFrame() {
+function loadPreviewFrame(url) {
   els.previewPlaceholder.hidden = true;
   els.previewFrame.hidden = false;
-  els.previewFrame.src = `${previewUrl()}?t=${Date.now()}`;
+  els.previewFrame.src = `${url}?t=${Date.now()}`;
 }
 
 /** 退出登录或切换会话时把预览复位为初始占位。 */
@@ -703,8 +709,8 @@ async function readDetail(response, fallback) {
 }
 
 /**
- * 刷新预览：先探一次入口页，据此区分「尚无应用」「加载失败」「登录态失效」，
- * 再把 iframe 指过去（见 tasks.md 4.3）。
+ * 刷新预览：先换取预览票据，据此区分「尚无应用」「加载失败」「登录态失效」，
+ * 再用返回的地址把 iframe 指过去（见 tasks.md 4.3）。
  */
 async function refreshPreview() {
   if (!sessionId) {
@@ -714,7 +720,7 @@ async function refreshPreview() {
 
   setPreviewState('正在加载…');
   try {
-    const response = await fetch(previewUrl());
+    const response = await fetch(previewTokenUrl());
     if (response.status === 401) {
       // 登录态失效由集中出口处理，这里不再改预览文案
       handleUnauthorized();
@@ -730,7 +736,8 @@ async function refreshPreview() {
       setPreviewState(`加载失败（HTTP ${response.status}）`);
       return;
     }
-    loadPreviewFrame();
+    const payload = await response.json();
+    loadPreviewFrame(payload.url);
     setPreviewState('已加载，可直接在右侧操作');
   } catch (err) {
     showPreviewPlaceholder(`预览加载失败：${err.message}`);

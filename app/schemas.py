@@ -147,6 +147,17 @@ class AuthMessage(BaseModel):
     message: str
 
 
+# --- 应用预览 ---
+
+
+class PreviewTokenResponse(BaseModel):
+    """预览票据。url 为可直接交给 iframe 的相对地址，路径内已含票据。"""
+
+    token: str
+    url: str
+    expires_in: int
+
+
 # --- 应用版本 ---
 
 

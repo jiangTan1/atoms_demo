@@ -60,6 +60,7 @@ def create_app() -> FastAPI:
     app.include_router(versions_api.router)
     app.include_router(shares_api.router)
     # 预览与分享预览路由必须在静态资源挂载之前注册，否则会被 "/" 的挂载先吃掉
+    app.include_router(preview_api.token_router)
     app.include_router(preview_api.router)
     app.include_router(shares_api.share_router)
 

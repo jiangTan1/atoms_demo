@@ -173,8 +173,9 @@ curl -s -b cookie.txt -H 'Content-Type: application/json' \
 | `GET` | `/api/sessions/{session_id}` | 查询该会话是否存在（非本人会话按不存在处理） |
 | `GET` | `/api/sessions/{session_id}/messages` | 该会话的历史消息（`role` + `text`），按发生顺序；会话不存在返回 404 |
 | `GET` | `/api/workspace/download?session_id=...` | 把该会话沙箱内的全部文件打包为 zip 下载（`application/zip`，保留目录结构）；沙箱为空或会话不存在返回 404 与中文提示 |
-| `GET` | `/preview/{session_id}/` | 会话内预览入口页（沙箱的 `index.html`）；缺少入口文件时返回 404 与中文提示 |
-| `GET` | `/preview/{session_id}/{路径}` | 按相对路径取沙箱内的预览资源（正确 `Content-Type`）；拒绝路径逃逸与隐藏文件 |
+| `GET` | `/api/sessions/{session_id}/preview-token` | 为自己的会话换取预览票据，返回 `token` / `url` / `expires_in`；缺少入口文件时返回 404 与中文提示 |
+| `GET` | `/preview/{session_id}/{token}/` | 会话内预览入口页（沙箱的 `index.html`）；票据无效或过期返回 403 与中文提示 |
+| `GET` | `/preview/{session_id}/{token}/{路径}` | 按相对路径取沙箱内的预览资源（正确 `Content-Type`）；拒绝路径逃逸与隐藏文件 |
 | `GET` | `/api/sessions/{session_id}/versions` | 该会话的版本列表（`version_id` / `created_at`），按时间倒序；无版本时返回空列表 |
 | `POST` | `/api/sessions/{session_id}/versions/{version_id}/rollback` | 回滚到指定版本；回滚前先留存当前内容，返回 `preserved_version_id` |
 | `POST` | `/api/sessions/{session_id}/shares` | 为指定版本生成公开只读分享，返回 `token` 与可打开的 `url` |
@@ -301,10 +302,11 @@ run.py                启动脚本（本地开发用，带热重载）
 
 - 前端通过 CDN（cdnjs）引入 `marked`、`highlight.js`、`DOMPurify`，**离线或该 CDN 被拦截时不可用**：此时页面自动退化为纯文本展示（对话与复制仍可用），但不会渲染 Markdown、也不会有语法高亮。如需离线，把三个库下载到 `web/vendor/` 并改为本地引用（注意 jsdelivr 在部分网络下不可达，cdnjs 与 unpkg 实测可用）。
 - **预览与分享里的应用运行在「不透明源」中**：iframe 只授予 `allow-scripts` / `allow-forms` / `allow-modals` / `allow-popups` / `allow-pointer-lock`，**不授予** `allow-same-origin`，也**不授予**顶层导航。因此应用脚本读不到主站 Cookie 与 `localStorage`、也不能把主站页面跳走；代价是**应用自身用不了 `localStorage` / `sessionStorage`、同源 `fetch` 与 Cookie**（浏览器会直接抛异常），需要持久化的应用只能用内存变量，刷新后状态重置。纯前端、状态在内存里的应用（游戏、计算器、表单工具等）不受影响。预览响应同时带 `X-Content-Type-Options: nosniff` 与限制资源来源的 CSP（含 `connect-src 'none'`），所以预览内的应用**也发不出网络请求**。
+- **预览地址把票据放在路径里而不是靠登录态 Cookie**：不透明源的 iframe 自己发起的子资源请求被浏览器视为跨站，`SameSite=Lax` 的登录 Cookie 不会跟随，会得到 401 并被 Chrome 的 ORB（`net::ERR_BLOCKED_BY_ORB`）拦掉，导致预览里样式与脚本全部失效。因此预览入口为 `/preview/<会话>/<票据>/`，页面内的相对路径自动继承同一前缀的票据，子资源无需 Cookie 即可加载。票据由 `GET /api/sessions/{session_id}/preview-token` 在为本人会话通过归属校验后签发（HMAC 签名、默认有效期 1 小时、绑定会话，见 `app/services/preview_token.py`）。
 - **版本快照会占用磁盘**：每个版本是沙箱内容的一份整目录副本，单会话最多保留 `VERSION_MAX_PER_SESSION`（默认 20）份，超出后按最旧优先清理。回滚也会新增一份（先留存当前内容），因此频繁回滚会推进版本并淘汰最旧版本；需要回收空间时停止服务后删除 `data/versions/`。
 - **分享是「免登录读入口」的定位**：任何拿到链接的人都能打开该版本的应用，因此**不要把含隐私数据的应用分享出去**。链接不设有效期，只能由创建者撤销；`token` 为 32 字节随机串不可枚举，为缓解枚举与滥用，`deploy/nginx.conf` 已对 `/api/chat` 与 `/share/` 分别按来源 IP 限流。
 - **既有会话可能没有入口文件**：本次改造前生成的会话沙箱里通常没有 `index.html`，这些会话在预览区会得到「缺少入口文件 `index.html`」的中文提示（而不是报错）；在对话里让智能体补上入口文件即可预览，历史会话与打包下载不受影响。
-- **把预览/分享的应用地址当顶层页面直接打开会绕过 iframe 沙箱**：`/preview/<会话>/` 与 `/share/<token>/app/` 在**被 iframe 嵌入**时处在不透明源中（脚本读不到 `document.cookie` 与 `localStorage`，已实测），但如果直接在地址栏打开这两个地址，文档就落在主站源上、不再是浏览器级的源隔离。此时应用脚本仍受响应头 CSP 的 `connect-src 'none'` 约束（发不出 `fetch` / `XMLHttpRequest`，也拿不到 HttpOnly 的登录态 Cookie），但这一层只是「阻止联网」而不是「换一个源」。彻底解决需要把预览迁到独立域名或独立端口（`openspec/changes/add-web-app-builder/design.md` 的 Open Questions 已记录），本版未做。
+- **把预览/分享的应用地址当顶层页面直接打开会绕过 iframe 沙箱**：`/preview/<会话>/<票据>/` 与 `/share/<token>/app/` 在**被 iframe 嵌入**时处在不透明源中（脚本读不到 `document.cookie` 与 `localStorage`，已实测），但如果直接在地址栏打开这两个地址，文档就落在主站源上、不再是浏览器级的源隔离。此时应用脚本仍受响应头 CSP 的 `connect-src 'none'` 约束（发不出 `fetch` / `XMLHttpRequest`，也拿不到 HttpOnly 的登录态 Cookie），但这一层只是「阻止联网」而不是「换一个源」。彻底解决需要把预览迁到独立域名或独立端口（`openspec/changes/add-web-app-builder/design.md` 的 Open Questions 已记录），本版未做。
 - 未标注语言的代码块只做等宽展示，不做语法高亮猜测。
 - 会话默认落盘到 `data/sessions.db`；由 `memory` 切到 `sqlite` 后，此前只存在于内存中的会话不会迁移。历史列表为逐会话读取（标题与消息数需按会话取出事件推导），故按最近更新倒序并限制 50 条。
 - 「历史会话」面板只支持浏览与切换，暂不支持重命名、删除与搜索。
