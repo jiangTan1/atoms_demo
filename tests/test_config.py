@@ -176,3 +176,22 @@ def test_invalid_auth_cookie_secure_reports_the_key_name(value):
 
     assert excinfo.value.key == "AUTH_COOKIE_SECURE"
     assert "AUTH_COOKIE_SECURE" in str(excinfo.value)
+
+
+def test_chat_timeout_defaults_to_two_hundred_forty():
+    assert load_settings(BASE_ENV).chat_timeout_seconds == 240
+
+
+def test_chat_timeout_accepts_explicit_value():
+    assert load_settings({**BASE_ENV, "CHAT_TIMEOUT_SECONDS": "30"}).chat_timeout_seconds == 30
+
+
+@pytest.mark.parametrize("value", ["0", "-5", "two minutes"])
+def test_invalid_chat_timeout_reports_the_key_name(value):
+    env = {**BASE_ENV, "CHAT_TIMEOUT_SECONDS": value}
+
+    with pytest.raises(ConfigError) as excinfo:
+        load_settings(env)
+
+    assert excinfo.value.key == "CHAT_TIMEOUT_SECONDS"
+    assert "CHAT_TIMEOUT_SECONDS" in str(excinfo.value)

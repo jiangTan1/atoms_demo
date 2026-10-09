@@ -79,3 +79,15 @@ async def list_sessions(
     sessions = list(getattr(response, "sessions", None) or [])
     sessions.sort(key=lambda item: getattr(item, "last_update_time", 0) or 0, reverse=True)
     return sessions[:limit]
+
+
+async def delete_session(
+    session_service: BaseSessionService,
+    *,
+    user_id: str,
+    session_id: str,
+) -> None:
+    """删除会话；示例写入失败时用它回退刚创建的空会话，不留半初始化状态。"""
+    await session_service.delete_session(
+        app_name=APP_NAME, user_id=user_id, session_id=session_id
+    )

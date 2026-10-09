@@ -1,0 +1,8 @@
+{
+  "examples": [
+    { "id": "tetris", "name": "俄罗斯方块", "description": "方向键旋转移动，堆叠消行赢取高分" },
+    { "id": "snake", "name": "贪吃蛇", "description": "方向键控制小蛇吃豆，越吃越长别撞墙" },
+    { "id": "game2048", "name": "2048", "description": "滑动合并相同数字，挑战合成 2048" },
+    { "id": "calculator", "name": "计算器", "description": "点按按钮完成加减乘除四则运算" }
+  ]
+}

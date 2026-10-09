@@ -107,7 +107,7 @@ def app(tmp_path, monkeypatch, session_service, runner):
     accounts_service.ensure_admin("root", "root")
 
     application = FastAPI()
-    application.state.settings = SimpleNamespace(auth_cookie_secure=False)
+    application.state.settings = SimpleNamespace(auth_cookie_secure=False, chat_timeout_seconds=120)
     application.state.accounts = accounts_service
     application.state.session_service = session_service
     application.state.runner = runner

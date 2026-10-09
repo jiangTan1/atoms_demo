@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>计算器</title>
+  <link rel="stylesheet" href="./style.css">
+</head>
+<body>
+  <div class="app">
+    <header class="topbar">
+      <h1 class="app-title">计算器</h1>
+      <button class="btn btn-primary" id="restartBtn" type="button">重新开始</button>
+    </header>
+
+    <main class="card calc">
+      <div class="screen">
+        <div class="screen-expr" id="expr"></div>
+        <div class="screen-value" id="value">0</div>
+      </div>
+
+      <div class="keys" id="keys">
+        <button class="key key-fn" type="button" data-action="clear">C</button>
+        <button class="key key-fn" type="button" data-action="back">⌫</button>
+        <button class="key key-fn" type="button" data-action="percent">%</button>
+        <button class="key key-op" type="button" data-op="/">÷</button>
+
+        <button class="key" type="button" data-digit="7">7</button>
+        <button class="key" type="button" data-digit="8">8</button>
+        <button class="key" type="button" data-digit="9">9</button>
+        <button class="key key-op" type="button" data-op="*">×</button>
+
+        <button class="key" type="button" data-digit="4">4</button>
+        <button class="key" type="button" data-digit="5">5</button>
+        <button class="key" type="button" data-digit="6">6</button>
+        <button class="key key-op" type="button" data-op="-">−</button>
+
+        <button class="key" type="button" data-digit="1">1</button>
+        <button class="key" type="button" data-digit="2">2</button>
+        <button class="key" type="button" data-digit="3">3</button>
+        <button class="key key-op" type="button" data-op="+">+</button>
+
+        <button class="key key-fn" type="button" data-action="sign">±</button>
+        <button class="key" type="button" data-digit="0">0</button>
+        <button class="key" type="button" data-action="dot">.</button>
+        <button class="key key-eq" type="button" data-action="equals">=</button>
+      </div>
+
+      <p class="hints">点按按钮完成四则运算；除以 0 会提示错误，按 C 或任意数字键恢复。</p>
+    </main>
+  </div>
+
+  <script src="./app.js"></script>
+</body>
+</html>

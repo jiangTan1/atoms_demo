@@ -182,6 +182,35 @@ class RollbackResponse(BaseModel):
     message: str
 
 
+# --- 预置示例应用 ---
+
+
+class ExampleItem(BaseModel):
+    """一个内置示例应用的清单条目。"""
+
+    id: str
+    name: str
+    description: str
+
+
+class ExampleListResponse(BaseModel):
+    examples: list[ExampleItem]
+
+
+class ExampleApplyRequest(BaseModel):
+    """选用一个内置示例应用，服务端据此建会话并写入沙箱。"""
+
+    example_id: str
+
+
+class ExampleApplyResponse(BaseModel):
+    """选用结果：新会话的标识，前端随即切换过去并刷新预览。"""
+
+    session_id: str
+    example_id: str
+    message: str
+
+
 # --- 应用分享 ---
 
 

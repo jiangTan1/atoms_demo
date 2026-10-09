@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>贪吃蛇</title>
+  <link rel="stylesheet" href="./style.css">
+</head>
+<body>
+  <div class="app">
+    <header class="topbar">
+      <h1 class="app-title">贪吃蛇</h1>
+      <button class="btn btn-primary" id="restartBtn" type="button">重新开始</button>
+    </header>
+
+    <main class="card game">
+      <div class="board-wrap">
+        <canvas id="board" width="400" height="400" aria-label="贪吃蛇游戏区"></canvas>
+        <div class="overlay" id="overlay">
+          <p class="overlay-title" id="overlayTitle">准备开始</p>
+          <p class="overlay-text" id="overlayText">用方向键控制小蛇吃掉橙色食物</p>
+          <button class="btn btn-primary" id="startBtn" type="button">开始游戏</button>
+        </div>
+      </div>
+
+      <aside class="panel">
+        <div class="stat">
+          <span class="stat-label">分数</span>
+          <span class="stat-value" id="score">0</span>
+        </div>
+        <div class="stat">
+          <span class="stat-label">蛇长</span>
+          <span class="stat-value" id="length">3</span>
+        </div>
+        <div class="hints">
+          <p class="hint-title">操作说明</p>
+          <p class="hint">← → ↑ ↓ / WASD：转向</p>
+          <p class="hint">不能撞墙，也不能撞到自己</p>
+          <p class="hint">每吃一颗食物得 10 分</p>
+        </div>
+      </aside>
+    </main>
+  </div>
+
+  <script src="./app.js"></script>
+</body>
+</html>

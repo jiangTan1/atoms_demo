@@ -1,19 +1,28 @@
 """SSE 帧转换与历史还原的单元测试。
 
-覆盖增量文本 / 最终文本 / 异常转 error 三类帧用例，以及会话事件→历史消息的还原。
+覆盖增量文本 / 最终文本 / 异常转 error 三类帧用例，会话事件→历史消息的还原，
+以及单轮时限（超时中止）与客户端中断的行为（见 specs/generation-execution-control/spec.md）。
 """
 
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
+
+import pytest
 
 from app.services.chat import (
     CLARIFY_MARKER,
+    NETWORK_TIMEOUT_MESSAGE,
+    RATE_LIMIT_MESSAGE,
+    TIMEOUT_MESSAGE,
     FrameBuilder,
+    classify_failure,
     compose_user_message,
     count_clarify_rounds,
     error_frame_from_exception,
     events_to_messages,
+    stream_frames,
 )
 
 
@@ -318,3 +327,131 @@ def test_extract_text_skips_thought_parts():
     assert events_to_messages(SimpleNamespace(events=[event])) == [
         {"role": "assistant", "text": "这段代码的作用是解释装饰器。"}
     ]
+
+
+# --- 失败归类：上游限流与模型调用超时都落在既有三类码内 ---
+
+
+def test_rate_limit_is_reported_as_retryable_upstream_failure():
+    code, message = classify_failure(429, "RateLimitError", "429 Too Many Requests")
+
+    assert code == "upstream_error"
+    assert RATE_LIMIT_MESSAGE in message
+    assert "429 Too Many Requests" in message
+
+
+def test_rate_limit_wording_without_status_is_still_detected():
+    code, message = classify_failure(None, "InternalServerError", "quota exceeded for model")
+
+    assert code == "upstream_error"
+    assert RATE_LIMIT_MESSAGE in message
+
+
+def test_model_call_timeout_is_reported_as_network_failure():
+    code, message = classify_failure(None, "APITimeoutError", "Request timed out.")
+
+    assert code == "network_error"
+    assert NETWORK_TIMEOUT_MESSAGE in message
+
+
+# --- 单轮时限与客户端中断（见 specs/generation-execution-control/spec.md）---
+
+
+class ScriptedRunner:
+    """按脚本产出假事件的 Runner。"""
+
+    def __init__(self, events):
+        self.events = events
+        self.kwargs = None
+
+    async def run_async(self, **kwargs):
+        self.kwargs = kwargs
+        for event in self.events:
+            yield event
+
+
+class HangingRunner:
+    """永不产出事件，模拟模型迟迟不返回，用于触发单轮时限。"""
+
+    async def run_async(self, **kwargs):
+        await asyncio.sleep(30)
+        yield  # pragma: no cover - 仅为让方法成为异步生成器
+
+
+class ExplodingRunner:
+    async def run_async(self, **kwargs):
+        raise ConnectionError("Connection refused")
+        yield  # pragma: no cover
+
+
+def make_settings(seconds):
+    # 只需带时限字段的最小配置替身，避免依赖完整 Settings
+    return SimpleNamespace(chat_timeout_seconds=seconds)
+
+
+async def drain(runner, settings):
+    return [
+        frame
+        async for frame in stream_frames(
+            runner,
+            user_id="user:alice",
+            session_id="s-1",
+            message="做一个俄罗斯方块",
+            settings=settings,
+        )
+    ]
+
+
+def test_normal_turn_ends_with_full_frame_then_done():
+    runner = ScriptedRunner([make_event("你好", partial=True)])
+
+    frames = asyncio.run(drain(runner, make_settings(120)))
+
+    assert [frame.type for frame in frames] == ["text", "text", "done"]
+    assert frames[0].partial is True
+    assert frames[1].partial is False
+    assert frames[1].data == "你好"
+
+
+def test_turn_beyond_the_limit_is_aborted_with_retryable_error():
+    """超时中止：给可重试的 error 帧与 done 帧，但不给完整帧（内容不完整不能当成品）。"""
+    frames = asyncio.run(drain(HangingRunner(), make_settings(0.01)))
+
+    assert [frame.type for frame in frames] == ["error", "done"]
+    assert frames[0].data.code == "upstream_error"
+    assert frames[0].data.message == TIMEOUT_MESSAGE.format(seconds=0.01)
+    assert frames[-1].data.session_id == "s-1"
+
+
+def test_runner_exception_becomes_error_frame_without_done():
+    """上游异常诚实上报：转成 error 帧后结束本轮，不伪造 done。"""
+    frames = asyncio.run(drain(ExplodingRunner(), make_settings(120)))
+
+    assert [frame.type for frame in frames] == ["error"]
+    assert frames[0].data.code == "network_error"
+
+
+def test_client_disconnect_cancels_the_turn_without_frames():
+    """客户端主动中断 = 断开连接：生成器被取消，不回任何帧（连接已断）。"""
+    seen: list = []
+
+    async def scenario():
+        async def consume():
+            async for frame in stream_frames(
+                HangingRunner(),
+                user_id="user:alice",
+                session_id="s-1",
+                message="做一个俄罗斯方块",
+                settings=make_settings(30),
+            ):
+                seen.append(frame)
+
+        task = asyncio.ensure_future(consume())
+        await asyncio.sleep(0)  # 让消费协程先跑起来并挂起在模型调用上
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(scenario())
+
+    assert seen == []

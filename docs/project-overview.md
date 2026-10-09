@@ -21,11 +21,11 @@
 
 | 层 | 位置 | 职责 |
 | --- | --- | --- |
-| 配置层 | [config.py](../app/config.py) | 读 `.env`，校验必填项与取值（含沙箱三项配额与版本上限），缺失/非法时启动失败并点名配置项 |
+| 配置层 | [config.py](../app/config.py) | 读 `.env`，校验必填项与取值（含沙箱三项配额、版本上限与单轮生成时限），缺失/非法时启动失败并点名配置项 |
 | 模型接入层 | [model.py](../app/agent/model.py) | 用 ADK `LiteLlm` 包装任意 OpenAI 兼容端点，端点/模型/凭据全部来自配置 |
-| Agent 层 | [root_agent.py](../app/agent/root_agent.py)、[prompt.py](../app/agent/prompt.py)、[tools.py](../app/agent/tools.py) | `LlmAgent` 单例：静态 instruction（`prompts/system.md`）+ 四个沙箱文件工具 |
-| 服务层 | [runner.py](../app/services/runner.py)、[chat.py](../app/services/chat.py)、[workspace.py](../app/services/workspace.py)、[versions.py](../app/services/versions.py)、[shares.py](../app/services/shares.py)、[accounts.py](../app/services/accounts.py) | Runner 与会话后端生命周期、Event→SSE 帧归一化、会话沙箱（入口定位/快照/打包）、版本留档与回滚、分享记录与 token 解析、账号库与登录态令牌 |
-| 接口层 | [api/auth.py](../app/api/auth.py)、[api/chat.py](../app/api/chat.py)、[api/sessions.py](../app/api/sessions.py)、[api/workspace.py](../app/api/workspace.py)、[api/versions.py](../app/api/versions.py)、[api/preview.py](../app/api/preview.py)、[api/shares.py](../app/api/shares.py) | 鉴权依赖与认证/管理员接口、SSE 对话（收尾自动留档）、会话管理、打包下载、版本列表与回滚、会话内应用预览、分享管理与免登录分享预览 |
+| Agent 层 | [root_agent.py](../app/agent/root_agent.py)、[prompt.py](../app/agent/prompt.py)、[tools.py](../app/agent/tools.py) | `LlmAgent` 单例：静态 instruction（`prompts/system.md`，含「先出骨架、再增量填充」与「应用完整外壳」两节）+ 四个沙箱文件工具 |
+| 服务层 | [runner.py](../app/services/runner.py)、[chat.py](../app/services/chat.py)、[workspace.py](../app/services/workspace.py)、[examples.py](../app/services/examples.py)、[versions.py](../app/services/versions.py)、[shares.py](../app/services/shares.py)、[accounts.py](../app/services/accounts.py) | Runner 与会话后端生命周期、Event→SSE 帧归一化（含单轮时限与失败归类）、会话沙箱（入口定位/从模板初始化/快照/打包）、内置示例清单与模板复制、版本留档与回滚、分享记录与 token 解析、账号库与登录态令牌 |
+| 接口层 | [api/auth.py](../app/api/auth.py)、[api/chat.py](../app/api/chat.py)、[api/sessions.py](../app/api/sessions.py)、[api/workspace.py](../app/api/workspace.py)、[api/versions.py](../app/api/versions.py)、[api/preview.py](../app/api/preview.py)、[api/shares.py](../app/api/shares.py)、[api/examples.py](../app/api/examples.py) | 鉴权依赖与认证/管理员接口、SSE 对话（超时/中断不留档）、会话管理、打包下载、版本列表与回滚、会话内应用预览、分享管理与免登录分享预览、内置示例列表与选用 |
 
 **一次对话的数据流转**：
 
@@ -33,12 +33,15 @@
 浏览器 --POST /api/chat (JSON + 登录态 Cookie)--> 接口层
   接口层：鉴权依赖校验 Cookie 令牌 → 取到登录用户名 → 归属记为 user:<用户名>
   接口层：解析/创建会话 → 推导澄清轮次 → 拼装用户消息前缀
+  服务层：asyncio.timeout(CHAT_TIMEOUT_SECONDS) 包住整轮，例外转可重试的 error 帧
   服务层：runner.run_async(StreamingMode.SSE) 驱动 Agent
      Agent：模型（LiteLLM）→ 可能发起 function call → 四个文件工具 → 沙箱读写
   服务层：ADK Event 归一化为帧（增量文本 / 完整文本 / error / done）
   接口层：包装为 text/event-stream（data: {json}）
-  接口层收尾：比对沙箱指纹，有变化则留一个版本快照（失败不影响已完成的对话流）
-浏览器：逐帧渲染（打字机）→ 结束后用完整帧兜底 → 渲染 Markdown/高亮/代码块按钮
+  接口层收尾：本轮无 error 帧时比对沙箱指纹，有变化则留一个版本快照（失败不影响已完成的对话流）
+浏览器：逐帧渲染（打字机 + 「正在生成第 N 行 · 已用 M 秒」进度）→ 结束后用完整帧兜底 → 渲染 Markdown/高亮/代码块按钮
+浏览器：失败（超时 / 限流 / 网络 / 中断）→ 失败提示 + 「重试」原样重发；生成中可点「中断」断开本轮
+浏览器：顶栏「示例应用」--GET /api/examples--> 列表；--POST /api/examples/apply--> 新会话 + 模板写入沙箱（免生成即预览）
 浏览器：预览区 --GET /api/sessions/{会话}/preview-token--> 校验归属后签发票据
 浏览器：刷新预览区 --GET /preview/{会话}/{票据}/--> 沙箱入口页（iframe 不透明源隔离）
 ```
@@ -117,7 +120,8 @@
 - **版本与分享弹层**：复用既有 `.modal` 形态。版本弹层倒序展示版本、确认后回滚（回滚成功重取预览与列表）；分享弹层选版本生成链接（成功后自动复制）、列出自己已创建的分享、可复制与撤销。
 - **降级策略**：任一 CDN 不可达时，页面自动退化为纯文本展示，对话与复制仍可用，**不白屏**。
 - 代码块上「复制」与「另存为」并排；另存为按语言决定扩展名，同轮同名自动加序号。
-- 安全：Markdown 渲染结果统一经 `DOMPurify` 清洗后再注入；预览 `iframe` 与主站之间靠 `sandbox`（不给 `allow-same-origin`）隔离，详见 §3.9。
+- 安全：Markdown 渲染结果统一经 `DOMPurify` 清洗后再注入；预览 `iframe` 与主站之间靠 `sandbox`（不给 `allow-same-origin`）隔离，详见 §4.3「已知限制」。
+- **设计令牌与暗色**：`styles.css` 顶部用一组 CSS 变量统一间距（8px 基准）、圆角、字号层级、配色与阴影；暗色令牌写两份（`html[data-theme="dark"]` 与 `@media (prefers-color-scheme: dark)`）以同时支持手动切换与跟随系统。预览画布固定白底，不随界面主题变暗（生成的应用是浅色自包含页面）。
 
 ### 3.7 部署取向：单机、反代、可开机自启
 
@@ -140,6 +144,23 @@
 - **99 上限的口径落到数据上**：账号表加 `source` 列（`system` / `self` / `admin`），上限判定为 `role='user' AND source='self'` 的行数 < 99，因此内置管理员（`system`）与管理员新增（`admin`）都不占名额。
 - **改密入口的取舍**（design 决策 11）：改密在语义上要求「证明你是这个账号」，而认证界面是未登录态。若在认证界面串联「登录 → 改密 → 退出」，会留下短暂的中间登录态、且失败路径状态不清。最终把改密收进**对话界面顶栏的弹层**（原密码 + 新密码，用户名取当前登录用户），一次请求、无中间态；认证界面上的「修改密码」按钮只作入口提示。
 - **前端 401 集中处理**：对话、会话列表、历史消息、打包下载四处请求任一返回 401 即切回认证界面并提示重新登录，四种失败态都不出现白屏。
+
+### 3.9 生成过程的可控性：单轮时限、中断、示例应用与界面主题
+
+「生成要等多久、能不能取消、失败怎么办」原本是黑盒，本节把这几处补上（见变更 `improve-generation-ux`）。
+
+| 取舍点 | 选择 | 理由与放弃的方案 |
+| --- | --- | --- |
+| 时限窗口 | **单轮 240s**，`asyncio.timeout` 从发起到本轮 SSE 结束（不跨模型调用累计） | 与「一轮对话 = 一次可重试的操作」语义对齐，前端只需一个中断按钮。逐次模型调用分别设超时，会让多轮工具调用的总耗时仍不可控；240s 仍小于部署样例的 `proxy_read_timeout 300s`，由应用先中止，代理不会抢先断开 |
+| 超时表现 | 回一帧 `error`（`upstream_error` + 中文说明）再回 `done`，**不产出** `partial=false` 完整帧 | 不新增第四类错误码（既有三类已够用，超时/限流靠消息说清事实）；「内容不完整 ⇒ 没有完整帧」让前端天然不会把半截内容当成品，也便于接口层据此跳过版本留档 |
+| 主动中断 | 前端 `AbortController` 断开请求 → 服务端协程被取消（`CancelledError` 透传，不回帧） | 连接已断，回帧无人接收；沙箱里已写入的文件保留，不做回滚（与「生成失败不留版本」一致） |
+| 执行中反馈 | 状态区每 500ms 刷新「正在生成第 N 行 · 已用 M 秒」，未收到文本时显示「正在等待模型响应」 | 行数从已接收文本推导，比伪造百分比更诚实（模型不返回 token 进度）；`done` 帧也不能加字段（会破坏既有帧协议断言） |
+| 失败归类 | 仅 `error` 帧出现即视为本轮失败：接口层跳过留档；前端给出「重试」按钮原样重发 | 客户端中断时生成器被取消、收尾逻辑自然不执行，无需额外标记 |
+| 示例应用 | 模板放版本库 `templates/examples/<id>/`，选用时**复制进新建会话的沙箱** | 复制后即可复用既有预览/版本/分享/下载/继续对话全链路，完全不走模型；放弃「前端静态展示示例」——那样就不能改、不能分享 |
+| 示例与惰性创建 | 选用示例是「新建会话惰性创建」的**唯一例外**，立即建会话并写沙箱；失败则回退（删会话 + 清沙箱） | 只有先落库并写好沙箱，「点开即预览」才成立；回退保证不出现「有会话但沙箱残缺」 |
+| 复杂需求 | 提示词要求「先出骨架、再增量填充」：先写 `index.html` 骨架，再逐个补 `style.css` / `app.js`，内容多则分批 | 避免一次性把整套应用塞给模型撞上单次生成长度上限，也让「生成中」的推进可见 |
+| 界面设计系统 | **零构建 + 自建设计令牌**（CSS 变量 + `prefers-color-scheme` / `html[data-theme]` 双层暗色） | 明确不引入 Tailwind / antd 与构建链，保持「原生 HTML/JS、无打包工具」的既有约束；令牌统一间距、圆角、字号层级、配色与阴影，只作用于**助手自身界面**，不强加给生成的应用 |
+| 代码高亮暗色 | 同时引入 `github` 与 `github-dark` 两份样式表，随主题切 `link.disabled` | 切换不重新下载，也不需改动 `highlight.js` 的调用方式 |
 
 ---
 
@@ -178,8 +199,17 @@
 | 管理员增删改用户（新增 / 重置密码 / 删除，禁删内置管理员） | ✅ | [api/auth.py](../app/api/auth.py) |
 | 会话与沙箱按登录用户隔离（`user:<用户名>` 归属） | ✅ | [api/sessions.py](../app/api/sessions.py)、[api/chat.py](../app/api/chat.py)、[api/workspace.py](../app/api/workspace.py) |
 | 401 集中处理（对话 / 列表 / 历史 / 下载 / 预览 / 版本 / 分享切回认证界面） | ✅ | [web/app.js](../web/app.js) |
+| 单轮生成时限（`CHAT_TIMEOUT_SECONDS`，默认 240s；超时中止并给可重试提示） | ✅ | [chat.py](../app/services/chat.py)、[config.py](../app/config.py) |
+| 执行进度提示（正在生成第 N 行 · 已用 M 秒）与主动中断按钮 | ✅ | [web/app.js](../web/app.js)、[web/index.html](../web/index.html) |
+| 失败重试（超时 / 限流 / 网络 / 中断：原样重发同一轮） | ✅ | [web/app.js](../web/app.js) |
+| 上游限流与模型调用超时的诚实归类 | ✅ | [chat.py](../app/services/chat.py) 的 `classify_failure()` |
+| 超时/中断轮次不留版本（仅无 error 帧的轮次比对指纹留档） | ✅ | [api/chat.py](../app/api/chat.py) |
+| 内置示例应用（4 个成品模板，选用即建会话并写入沙箱，免生成即预览） | ✅ | [services/examples.py](../app/services/examples.py)、[api/examples.py](../app/api/examples.py)、`templates/examples/` |
+| 从模板初始化沙箱（配额预检 + 失败清理，只作用于目标会话） | ✅ | [services/workspace.py](../app/services/workspace.py) 的 `init_from_template()` |
+| 分段生成规范（先出骨架、再增量填充）与生成应用的完整外壳约定 | ✅（提示词约束） | `prompts/system.md` |
+| 界面设计令牌 + 明暗主题（自动 / 浅色 / 深色，含代码高亮联动） | ✅ | [web/styles.css](../web/styles.css)、[web/app.js](../web/app.js) |
 | 部署样例（Nginx + systemd，含对话与分享两处按来源 IP 限流） | ✅ | `deploy/` |
-| 单元测试 | ✅ 253 项全通过 | `tests/` |
+| 单元测试 | ✅ 295 项全通过 | `tests/` |
 
 **端到端已实机验证**：生成多级目录项目并落盘、目录结构与沙箱一致、勾选下载得到可解压 zip；绝对路径与 `..` 逃逸被拒且沙箱未被改动；超配额写入被拒且模型改为向用户说明；领域外与法规风险请求零落盘；增量修改先读后写、无重复或残留副本；浏览器侧按钮布局与四种点击反馈（无会话 / 空沙箱 / 成功 / 服务不可达）均符合预期。
 
@@ -203,6 +233,8 @@
 ### 4.3 已记录的已知限制
 
 - 沙箱不随会话「新建」而清理，`data/workspace/` 会随使用累积，需手动删除；同一会话并发写同一路径**以后写者为准**（无文件锁）。
+- **单轮生成有 240 秒硬上限**（`CHAT_TIMEOUT_SECONDS`）：超时由服务端主动中止并给出可重试的失败提示，该轮不留版本，但已写入沙箱的文件仍在。需求过大时需拆成多轮分批补。
+- **示例模板需与代码一起发布**：`templates/examples/` 不属于 `data/`，是版本库的一部分；部署时若只同步 `app/` 与 `web/` 会缺少模板，`GET /api/examples` 会返回「示例清单不可用」。
 - **版本快照会额外占用磁盘**：每轮有效改动都整目录复制一份到 `data/versions/<会话>/<版本>/`，单会话最多保留 `VERSION_MAX_PER_SESSION`（默认 20）份、超出后清理最旧；`data/versions/` 与 `data/workspace/` 同样只增不减，需手动清理。
 - **既有无入口文件的会话在预览区只给提示**：改造前创建的会话沙箱里没有 `index.html`，预览会提示「缺少入口文件」而不是报错，需通过对话让智能体补齐入口页，或直接整包下载。
 - **分享是免登录读入口**：任何人拿到链接即可只读访问，不校验身份、不记录访问者；已按来源 IP 在 Nginx 限流以缓解 token 枚举与流量滥用，但链接一旦外泄即等同于内容公开，撤销是唯一的止损手段。

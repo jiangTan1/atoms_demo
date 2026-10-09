@@ -52,6 +52,11 @@ DEFAULT_WORKSPACE_MAX_TOTAL_BYTES = 10485760
 # 超过上限时按最旧优先清理，使版本占用不会无界增长
 DEFAULT_VERSION_MAX_PER_SESSION = 20
 
+# 单轮生成的总时限（见 specs/generation-execution-control/spec.md 的「单轮生成时限」）：
+# 从发起请求到本轮流结束，超过即主动中止并给出失败提示，避免长任务无界占用资源。
+# 该值应小于反向代理的读超时（部署样例为 proxy_read_timeout 300s）
+DEFAULT_CHAT_TIMEOUT_SECONDS = 240
+
 # 登录态 Cookie 是否带 Secure（见 specs/access-control/spec.md 的「登录与登录态」）：
 # 默认 false 以便本机与内网 HTTP 演示；部署到 HTTPS 后置为 true
 DEFAULT_AUTH_COOKIE_SECURE = False
@@ -84,6 +89,7 @@ class Settings:
     workspace_max_files: int
     workspace_max_total_bytes: int
     version_max_per_session: int
+    chat_timeout_seconds: int
     auth_cookie_secure: bool
     admin_username: str | None
     admin_password: str | None = field(repr=False)
@@ -202,6 +208,9 @@ def load_settings(env: Mapping[str, str] | None = None) -> Settings:
         ),
         version_max_per_session=_positive_int(
             env, "VERSION_MAX_PER_SESSION", DEFAULT_VERSION_MAX_PER_SESSION
+        ),
+        chat_timeout_seconds=_positive_int(
+            env, "CHAT_TIMEOUT_SECONDS", DEFAULT_CHAT_TIMEOUT_SECONDS
         ),
         auth_cookie_secure=_bool_flag(
             env, "AUTH_COOKIE_SECURE", DEFAULT_AUTH_COOKIE_SECURE

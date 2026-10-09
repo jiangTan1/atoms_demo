@@ -32,6 +32,10 @@ WORKSPACE_ROOT = PROJECT_ROOT / "data" / "workspace"
 # 预览以它为起始页面，约定固定在沙箱根目录
 ENTRY_FILE_NAME = "index.html"
 
+# 预置示例模板根目录（见 specs/example-apps/spec.md）：
+# 每个示例是 templates/examples/<示例 ID>/ 下的一套自包含静态文件，随时间版本库发布
+TEMPLATES_ROOT = PROJECT_ROOT / "templates" / "examples"
+
 # 空沙箱时给模型的说明（列目录要求「返回表示当前没有文件的结果，而不是报错」）
 EMPTY_WORKSPACE_TEXT = "当前沙箱内没有任何文件。"
 
@@ -289,6 +293,77 @@ def read_dir_asset(base: Path, relative_path: str) -> tuple[bytes, str]:
 def read_asset(session_id: str, relative_path: str) -> tuple[bytes, str]:
     """按会话沙箱内相对路径取用单个文件，返回（内容字节、内容类型）。"""
     return read_dir_asset(workspace_dir(session_id), relative_path)
+
+
+# --- 从模板初始化（供示例应用使用，见 specs/file-workspace/spec.md）---
+
+
+def init_from_template(
+    session_id: str,
+    template_dir: Path,
+    settings: Settings | None = None,
+) -> list[str]:
+    """把一个模板目录的全部内容复制进会话沙箱，返回写入文件的相对路径清单。
+
+    复制前按既有口径做配额预检（单文件、文件数、总占用），任一项超限即整体拒绝，
+    不写入任何内容；复制中途失败时清理本次已写入的部分，不留下残缺沙箱。
+    操作只作用于该会话（见 specs/file-workspace/spec.md 的「从模板初始化会话沙箱」）。
+    """
+    settings = settings or get_settings()
+    source = Path(template_dir)
+    if not source.is_dir():
+        raise WorkspaceError(f"模板目录不存在：{source}")
+
+    files = sorted(path for path in source.rglob("*") if path.is_file())
+    if not files:
+        raise WorkspaceError(f"模板目录 {source} 内没有任何文件。")
+
+    total = 0
+    for path in files:
+        size = path.stat().st_size
+        if size > settings.workspace_max_file_bytes:
+            raise WorkspaceError(
+                f"复制被拒绝：模板文件 {path.name} 为 {size} 字节，超过单文件上限 "
+                f"{settings.workspace_max_file_bytes} 字节。"
+            )
+        total += size
+
+    base = workspace_dir(session_id)
+    existing_count, existing_total = _survey(base)
+    if existing_count + len(files) > settings.workspace_max_files:
+        raise WorkspaceError(
+            f"复制被拒绝：该会话文件数将达到 {existing_count + len(files)} 个，"
+            f"超过上限 {settings.workspace_max_files} 个。"
+        )
+    if existing_total + total > settings.workspace_max_total_bytes:
+        raise WorkspaceError(
+            f"复制被拒绝：该会话沙箱总占用将达到 {existing_total + total} 字节，"
+            f"超过上限 {settings.workspace_max_total_bytes} 字节。"
+        )
+
+    base_preexisting = base.is_dir()
+    written: list[Path] = []
+    try:
+        for path in files:
+            relative = _relative(source, path)
+            _b, target, _rel = _safe_target_in(base, relative)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(path, target)
+            written.append(target)
+    except Exception as exc:  # noqa: BLE001 - 任意读写失败都要清理本次半成品
+        # 沙箱原先不存在时，本次新建的一切都属于本次操作，整目录删除即可；
+        # 原先已存在时只回退本次写入的文件，不触碰既有内容
+        if not base_preexisting:
+            shutil.rmtree(base, ignore_errors=True)
+        else:
+            for target in written:
+                try:
+                    target.unlink()
+                except OSError:
+                    pass
+        raise WorkspaceError(f"复制模板失败：{exc}") from exc
+
+    return [_relative(base, target) for target in written]
 
 
 # --- 快照与恢复（供版本服务使用，见 specs/file-workspace/spec.md）---

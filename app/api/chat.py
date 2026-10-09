@@ -95,15 +95,22 @@ async def chat(
         )
 
     async def event_stream():
+        # 只有本轮正常跑完才留版本：任一 error 帧（超时 / 限流 / 上游报错）都属未完成的本轮，
+        # 客户端主动中断时生成器被取消、这里也不会执行到留档（见 design.md 决策 3）
+        failed = False
         async for frame in chat_service.stream_frames(
             runner,
             user_id=user_id,
             session_id=session_id,
             message=message,
+            settings=request.app.state.settings,
         ):
+            if frame.type == "error":
+                failed = True
             yield f"data: {frame.model_dump_json()}\n\n"
 
-        # 完整帧已产出，本轮改动至此定型：按沙箱指纹留档（见 design.md 决策 8）
-        snapshot_if_changed(request, session_id)
+        if not failed:
+            # 完整帧已产出，本轮改动至此定型：按沙箱指纹留档（见 design.md 决策 8）
+            snapshot_if_changed(request, session_id)
 
     return StreamingResponse(event_stream(), media_type="text/event-stream", headers=SSE_HEADERS)

@@ -54,6 +54,8 @@ const els = {
   messages: document.getElementById('messages'),
   input: document.getElementById('input'),
   send: document.getElementById('send'),
+  interrupt: document.getElementById('interrupt'),
+  themeToggle: document.getElementById('theme-toggle'),
   newSession: document.getElementById('new-session'),
   downloadProject: document.getElementById('download-project'),
   historyToggle: document.getElementById('history-toggle'),
@@ -78,10 +80,29 @@ const els = {
   shareList: document.getElementById('share-list'),
   shareClose: document.getElementById('share-close'),
   shareTip: document.getElementById('share-tip'),
+  examplesOpen: document.getElementById('examples-open'),
+  examplesModal: document.getElementById('examples-modal'),
+  examplesList: document.getElementById('examples-list'),
+  examplesClose: document.getElementById('examples-close'),
+  examplesTip: document.getElementById('examples-tip'),
+  hljsLight: document.getElementById('hljs-light'),
+  hljsDark: document.getElementById('hljs-dark'),
 };
 
 let sessionId = null;
 let streaming = false;
+
+// 本轮生成的取消控制器与「是否由使用者主动中断」标记（见 design.md 决策 2）
+let activeController = null;
+let interrupted = false;
+
+// 发送过的最后一条用户消息，供出错后的「重试」原样重发
+let lastUserMessage = '';
+
+// 执行中的进度反馈：本轮已接收文本与开始时间，定时器每 500ms 刷新（见 design.md 决策 4）
+let streamRaw = '';
+let turnStartedAt = 0;
+let progressTimer = null;
 
 // 认证界面当前表单：login / register（改密已收进已登录界面，见 design.md 决策 11）
 let authMode = 'login';
@@ -115,7 +136,8 @@ function restoreEmptyHint() {
   hint.id = 'empty-hint';
   hint.innerHTML =
     '<p>描述你想要的网页应用，智能体会生成可运行的文件并在这里预览。</p>' +
-    '<p class="hint">示例：做一个俄罗斯方块小游戏；做一个能算账的记账页面；给这个应用加一个计分板。</p>';
+    '<p class="hint">示例：做一个俄罗斯方块小游戏；做一个能算账的记账页面；给这个应用加一个计分板。</p>' +
+    '<p class="hint">想立刻看到成品？点顶栏的「示例应用」，选一个内置小游戏或小工具即可。</p>';
   els.messages.appendChild(hint);
 }
 
@@ -156,10 +178,30 @@ function addMessage(role, text) {
   return content;
 }
 
-function showError(contentEl, message) {
+/** 在回复气泡下展示错误提示；onRetry 非空时附上「重试」按钮。 */
+function showError(contentEl, message, onRetry) {
   const tip = document.createElement('div');
   tip.className = 'error-tip';
-  tip.textContent = message;
+
+  const text = document.createElement('span');
+  text.className = 'error-text';
+  text.textContent = message;
+  tip.appendChild(text);
+
+  if (onRetry) {
+    const retry = document.createElement('button');
+    retry.type = 'button';
+    retry.className = 'ghost retry-btn';
+    retry.textContent = '重试';
+    retry.addEventListener('click', () => {
+      const wrap = contentEl.closest('.message');
+      tip.remove();
+      if (wrap) wrap.remove();
+      onRetry();
+    });
+    tip.appendChild(retry);
+  }
+
   contentEl.parentElement.appendChild(tip);
   scrollToBottom();
 }
@@ -332,19 +374,76 @@ async function describeHttpError(response) {
   return `请求失败（HTTP ${response.status}）${detail ? '：' + detail : ''}`;
 }
 
-async function send() {
+// --- 执行进度与中断（见 design.md 决策 1、2、4）---
+
+function countLines(text) {
+  return text ? text.split('\n').length : 0;
+}
+
+function stopProgress() {
+  if (progressTimer) {
+    clearInterval(progressTimer);
+    progressTimer = null;
+  }
+}
+
+/** 状态区显示「正在生成第 N 行 · 已用 M 秒」，让使用者知道后台在推进。 */
+function renderProgress() {
+  const seconds = Math.floor((Date.now() - turnStartedAt) / 1000);
+  const lines = countLines(streamRaw);
+  setStatus(
+    lines
+      ? `正在生成第 ${lines} 行 · 已用 ${seconds} 秒`
+      : `正在等待模型响应 · 已用 ${seconds} 秒`
+  );
+}
+
+function startProgress() {
+  turnStartedAt = Date.now();
+  streamRaw = '';
+  stopProgress();
+  renderProgress();
+  progressTimer = setInterval(renderProgress, 500);
+}
+
+/** 使用者主动取消长任务：断开请求，服务端随之取消本轮生成（见 decision 2）。 */
+function interrupt() {
+  if (!streaming || !activeController) return;
+  interrupted = true;
+  activeController.abort();
+  setStatus('正在中断…');
+}
+
+/** 表单入口：把输入框内容作为新的一轮发出。 */
+function send() {
   const text = els.input.value.trim();
   if (!text || streaming) return;
-
   els.input.value = '';
   addMessage('user', text);
+  lastUserMessage = text;
+  runTurn(text);
+}
+
+/**
+ * 驱动一轮对话：消费 SSE 帧、给出进度、支持中断与重试。
+ * text 为本轮发给服务端的内容（重试时原样重发）。
+ */
+async function runTurn(text) {
+  if (streaming) return;
   const contentEl = addMessage('assistant', '');
 
   streaming = true;
+  interrupted = false;
   els.send.disabled = true;
-  setStatus('生成中…');
+  els.interrupt.hidden = false;
+  startProgress();
+
+  const controller = new AbortController();
+  activeController = controller;
 
   let raw = '';
+  streamRaw = '';
+  let errorMessage = '';
   let renderTimer = null;
 
   const renderNow = () => {
@@ -361,12 +460,15 @@ async function send() {
       renderMarkdown(contentEl, raw);
     }, 100);
   };
+  // 重试：把同一轮内容原样重发（失败的气泡与提示由 showError 负责移除）
+  const retry = () => runTurn(text);
 
   try {
     const response = await fetch('/api/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ message: text, session_id: sessionId }),
+      signal: controller.signal,
     });
 
     if (response.status === 401) {
@@ -395,18 +497,24 @@ async function send() {
 
         if (frame.type === 'text') {
           raw = frame.partial ? raw + frame.data : frame.data;
+          streamRaw = raw;
           scheduleRender();
         } else if (frame.type === 'error') {
-          showError(contentEl, frame.data.message || '服务端返回错误');
+          // 任何错误帧（超时 / 限流 / 上游报错）都在收尾时给出「重试」按钮
+          errorMessage = frame.data.message || '服务端返回错误';
         } else if (frame.type === 'done') {
           if (frame.data && frame.data.session_id) sessionId = frame.data.session_id;
         }
       }
     }
+    // 响应已读完，之后的收尾动作不再受「中断」影响
+    activeController = null;
 
     renderNow();
-    if (!raw) {
-      showError(contentEl, '本轮没有收到任何内容，请重试。');
+    if (errorMessage) {
+      showError(contentEl, errorMessage, retry);
+    } else if (!raw) {
+      showError(contentEl, '本轮没有收到任何内容，请重试。', retry);
     }
     renderSessionId();
     if (sessionId) {
@@ -417,11 +525,23 @@ async function send() {
     await refreshPreview();
   } catch (err) {
     renderNow();
-    showError(contentEl, `连接中断或服务端异常：${err.message}`);
+    if (interrupted) {
+      showError(
+        contentEl,
+        '已中断本轮生成。已写入沙箱的部分内容仍保留，可重新发送；若这是新会话，可在「历史会话」中找到它继续补齐。'
+      );
+      if (sessionId) await refreshPreview();
+    } else {
+      showError(contentEl, `连接中断或服务端异常：${err.message}`, retry);
+    }
   } finally {
+    stopProgress();
+    activeController = null;
     streaming = false;
     els.send.disabled = false;
-    setStatus('');
+    els.interrupt.hidden = true;
+    // 中断时保留说明性状态，其余情况清空进度
+    setStatus(interrupted ? '本轮未完成，已写入沙箱的部分内容仍保留。' : '');
     els.input.focus();
   }
 }
@@ -1055,6 +1175,162 @@ function closeShareModal() {
   els.shareList.innerHTML = '';
 }
 
+// --- 内置示例应用（见 specs/example-apps/spec.md 与 design.md 决策 6）---
+
+function renderExamples(items) {
+  els.examplesList.innerHTML = '';
+  if (!items.length) {
+    listMessage(els.examplesList, '暂无可用的内置示例。', 'list-empty');
+    return;
+  }
+
+  items.forEach((item) => {
+    const card = document.createElement('div');
+    card.className = 'example-card';
+
+    const name = document.createElement('span');
+    name.className = 'example-name';
+    name.textContent = item.name;
+
+    const desc = document.createElement('span');
+    desc.className = 'example-desc';
+    desc.textContent = item.description || '';
+
+    const use = document.createElement('button');
+    use.type = 'button';
+    use.className = 'primary';
+    use.textContent = '使用';
+    use.addEventListener('click', () => applyExample(item.id, use));
+
+    card.append(name, desc, use);
+    els.examplesList.appendChild(card);
+  });
+}
+
+async function loadExamples() {
+  listMessage(els.examplesList, '正在载入示例…', 'list-empty');
+  const result = await requestJson('GET', '/api/examples');
+  if (result.status === 401) {
+    handleUnauthorized();
+    return;
+  }
+  if (!result.ok) {
+    els.examplesList.innerHTML = '';
+    setTip(els.examplesTip, failureText(result, '示例列表载入失败'), 'error');
+    return;
+  }
+  renderExamples((result.data && result.data.examples) || []);
+}
+
+/** 选用示例：服务端新会话已写好沙箱，这里切过去并刷新预览。 */
+async function applyExample(exampleId, button) {
+  if (streaming) {
+    setTip(els.examplesTip, '正在生成回复，请稍候再选择示例。', 'error');
+    return;
+  }
+
+  button.disabled = true;
+  setTip(els.examplesTip, '正在创建示例会话…');
+  try {
+    const result = await requestJson('POST', '/api/examples/apply', {
+      example_id: exampleId,
+    });
+    if (result.status === 401) {
+      handleUnauthorized();
+      return;
+    }
+    if (!result.ok) {
+      setTip(els.examplesTip, failureText(result, '示例创建失败'), 'error');
+      return;
+    }
+
+    closeExamplesModal();
+    clearMessages();
+    sessionId = result.data.session_id;
+    rememberSession(sessionId);
+    renderSessionId();
+    highlightActiveSession();
+    await refreshHistoryList();
+    // 沙箱已由服务端写好，直接刷新预览即可看到成品
+    await refreshPreview();
+    setStatus((result.data && result.data.message) || '已创建示例应用，可直接预览。');
+  } finally {
+    button.disabled = false;
+  }
+}
+
+function openExamplesModal() {
+  if (streaming) {
+    setStatus('正在生成回复，请稍候再选择示例');
+    return;
+  }
+  els.examplesModal.hidden = false;
+  setTip(els.examplesTip, '');
+  loadExamples();
+}
+
+function closeExamplesModal() {
+  els.examplesModal.hidden = true;
+  setTip(els.examplesTip, '');
+  els.examplesList.innerHTML = '';
+}
+
+// --- 界面主题（跟随系统 / 浅色 / 深色，见 design.md 决策 9）---
+
+const THEME_STORAGE_KEY = 'code-assistant.theme';
+const THEMES = ['auto', 'light', 'dark'];
+const THEME_LABELS = { auto: '主题：自动', light: '主题：浅色', dark: '主题：深色' };
+
+let theme = 'auto';
+
+function readStoredTheme() {
+  try {
+    const value = localStorage.getItem(THEME_STORAGE_KEY);
+    return THEMES.includes(value) ? value : 'auto';
+  } catch (err) {
+    // 隐私模式下不可读，退回跟随系统
+    return 'auto';
+  }
+}
+
+/** 当前实际生效的是浅色还是深色：auto 时看系统偏好。 */
+function resolvedTheme() {
+  if (theme !== 'auto') return theme;
+  return window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches
+    ? 'dark'
+    : 'light';
+}
+
+/**
+ * 代码高亮主题跟随界面主题（CDN 的 github 样式是浅色底、github-dark 是深色底）。
+ * 两份样式表都留在 DOM 里，只切换 disabled，避免切换时重新下载。
+ */
+function syncCodeTheme() {
+  const dark = resolvedTheme() === 'dark';
+  if (els.hljsLight) els.hljsLight.disabled = dark;
+  if (els.hljsDark) els.hljsDark.disabled = !dark;
+}
+
+/** auto 时不设 data-theme（交由 prefers-color-scheme），否则显式覆盖。 */
+function applyTheme(value) {
+  theme = THEMES.includes(value) ? value : 'auto';
+  const root = document.documentElement;
+  if (theme === 'auto') root.removeAttribute('data-theme');
+  else root.setAttribute('data-theme', theme);
+  els.themeToggle.textContent = THEME_LABELS[theme];
+  els.themeToggle.title = `界面主题：${THEME_LABELS[theme].slice(3)}（点击在自动 / 浅色 / 深色间切换）`;
+  syncCodeTheme();
+  try {
+    localStorage.setItem(THEME_STORAGE_KEY, theme);
+  } catch (err) {
+    /* 隐私模式下不可写，本次选择仅在本次会话生效 */
+  }
+}
+
+function cycleTheme() {
+  applyTheme(THEMES[(THEMES.indexOf(theme) + 1) % THEMES.length]);
+}
+
 // --- 认证 ---
 
 const AUTH_MODE_TEXT = {
@@ -1092,6 +1368,7 @@ function showAuth(tip) {
   closePasswordModal();
   closeVersionsModal();
   closeShareModal();
+  closeExamplesModal();
   resetPreview();
   els.chatApp.hidden = true;
   els.authApp.hidden = false;
@@ -1261,6 +1538,8 @@ async function logout() {
 /** 页面加载门控：先确认登录态，成功才进入对话界面。 */
 async function start() {
   setAuthMode('login');
+  // 主题是纯本地偏好，先于登录态生效，避免未登录时闪烁
+  applyTheme(readStoredTheme());
   try {
     const response = await fetch('/api/auth/me');
     if (response.ok) {
@@ -1291,6 +1570,19 @@ function bindEvents() {
   els.passwordCancel.addEventListener('click', closePasswordModal);
   els.logout.addEventListener('click', logout);
   els.send.addEventListener('click', send);
+  els.interrupt.addEventListener('click', interrupt);
+  els.themeToggle.addEventListener('click', cycleTheme);
+  // 跟随系统时：系统主题变化也要同步代码高亮样式
+  if (window.matchMedia) {
+    const query = window.matchMedia('(prefers-color-scheme: dark)');
+    const onChange = () => {
+      if (theme === 'auto') syncCodeTheme();
+    };
+    if (query.addEventListener) query.addEventListener('change', onChange);
+    else if (query.addListener) query.addListener(onChange);
+  }
+  els.examplesOpen.addEventListener('click', openExamplesModal);
+  els.examplesClose.addEventListener('click', closeExamplesModal);
   els.newSession.addEventListener('click', startNewSession);
   els.downloadProject.addEventListener('click', downloadProject);
   els.historyToggle.addEventListener('click', (event) => {
@@ -1312,6 +1604,7 @@ function bindEvents() {
     if (!els.passwordModal.hidden) closePasswordModal();
     if (!els.versionsModal.hidden) closeVersionsModal();
     if (!els.shareModal.hidden) closeShareModal();
+    if (!els.examplesModal.hidden) closeExamplesModal();
   });
   els.input.addEventListener('keydown', (event) => {
     if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {

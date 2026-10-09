@@ -1,0 +1,215 @@
+:root {
+  --bg: #f4f5f7;
+  --card: #ffffff;
+  --ink: #1f2329;
+  --muted: #6b7280;
+  --line: #e5e7eb;
+  --primary: #16a34a;
+  --primary-strong: #128a3e;
+  --primary-ink: #ffffff;
+  --radius: 12px;
+  --radius-sm: 8px;
+  --gap: 8px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  min-height: 100vh;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+    "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  font-size: 15px;
+  line-height: 1.5;
+}
+
+.app {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: calc(var(--gap) * 2);
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--gap);
+  padding: var(--gap) 0 calc(var(--gap) * 2);
+}
+
+.app-title {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+}
+
+.btn {
+  font: inherit;
+  cursor: pointer;
+  border: 1px solid var(--line);
+  background: var(--card);
+  color: var(--ink);
+  border-radius: var(--radius-sm);
+  padding: calc(var(--gap) * 0.75) calc(var(--gap) * 2);
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.btn:hover {
+  background: #f0f2f5;
+}
+
+.btn-primary {
+  background: var(--primary);
+  border-color: var(--primary);
+  color: var(--primary-ink);
+}
+
+.btn-primary:hover {
+  background: var(--primary-strong);
+  border-color: var(--primary-strong);
+}
+
+.card {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: 0 1px 3px rgba(16, 24, 40, 0.06);
+  padding: calc(var(--gap) * 2);
+}
+
+.game {
+  display: flex;
+  gap: calc(var(--gap) * 3);
+  align-items: flex-start;
+  justify-content: center;
+}
+
+.board-wrap {
+  position: relative;
+  flex: 1 1 auto;
+  max-width: 400px;
+}
+
+#board {
+  display: block;
+  width: 100%;
+  max-width: 400px;
+  height: auto;
+  border-radius: var(--radius-sm);
+  background: #0f172a;
+}
+
+.overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--gap);
+  padding: var(--gap);
+  text-align: center;
+  background: rgba(15, 23, 42, 0.76);
+  border-radius: var(--radius-sm);
+  color: #ffffff;
+}
+
+.overlay[hidden] {
+  display: none;
+}
+
+.overlay-title {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.overlay-text {
+  margin: 0;
+  font-size: 13px;
+  color: rgba(255, 255, 255, 0.85);
+}
+
+.panel {
+  flex: 0 0 auto;
+  min-width: 150px;
+  display: flex;
+  flex-direction: column;
+  gap: calc(var(--gap) * 2);
+}
+
+.stat {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--gap);
+  padding-bottom: var(--gap);
+  border-bottom: 1px solid var(--line);
+}
+
+.stat-label {
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.stat-value {
+  font-size: 22px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.hints {
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.hint-title {
+  margin: 0 0 var(--gap);
+  font-weight: 600;
+  color: var(--ink);
+  font-size: 13px;
+}
+
+.hint {
+  margin: 0 0 calc(var(--gap) * 0.5);
+}
+
+@media (max-width: 640px) {
+  .app {
+    padding: var(--gap);
+  }
+
+  .game {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .board-wrap {
+    width: 100%;
+    margin: 0 auto;
+  }
+
+  .panel {
+    width: 100%;
+    flex-direction: row;
+    flex-wrap: wrap;
+  }
+
+  .stat {
+    flex: 1 1 40%;
+  }
+
+  .hints {
+    flex: 1 1 100%;
+  }
+}

@@ -75,7 +75,12 @@ class FakeSessionService:
 def make_request(runner, session_service):
     return SimpleNamespace(
         app=SimpleNamespace(
-            state=SimpleNamespace(runner=runner, session_service=session_service)
+            state=SimpleNamespace(
+                runner=runner,
+                session_service=session_service,
+                # 接口层会把时限透传给服务层，这里给一个最小可用的配置替身
+                settings=SimpleNamespace(chat_timeout_seconds=120),
+            )
         )
     )
 

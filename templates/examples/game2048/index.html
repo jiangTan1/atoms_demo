@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>2048</title>
+  <link rel="stylesheet" href="./style.css">
+</head>
+<body>
+  <div class="app">
+    <header class="topbar">
+      <h1 class="app-title">2048</h1>
+      <button class="btn btn-primary" id="restartBtn" type="button">重新开始</button>
+    </header>
+
+    <main class="card game">
+      <div class="hud">
+        <div class="stat">
+          <span class="stat-label">分数</span>
+          <span class="stat-value" id="score">0</span>
+        </div>
+        <div class="stat">
+          <span class="stat-label">最大方块</span>
+          <span class="stat-value" id="best">0</span>
+        </div>
+      </div>
+
+      <div class="grid-wrap">
+        <div class="grid" id="grid" aria-label="2048 棋盘"></div>
+        <div class="banner" id="banner" hidden>
+          <p class="banner-title" id="bannerTitle">游戏结束</p>
+          <p class="banner-text" id="bannerText"></p>
+          <button class="btn btn-primary" id="bannerBtn" type="button">再来一局</button>
+        </div>
+      </div>
+
+      <p class="hints">方向键 / WASD 滑动方块，相同数字合并，合成 2048 即获胜。</p>
+    </main>
+  </div>
+
+  <script src="./app.js"></script>
+</body>
+</html>

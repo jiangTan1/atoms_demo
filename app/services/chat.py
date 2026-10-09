@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import re
 import uuid
 from collections.abc import AsyncIterator
@@ -20,6 +21,7 @@ from google.adk.events import Event
 from google.adk.runners import RunConfig, Runner
 from google.genai import types as genai_types
 
+from app.config import Settings, get_settings
 from app.schemas import (
     TARGET_LANGUAGES,
     DoneData,
@@ -48,6 +50,14 @@ ERROR_MESSAGES = {
     "upstream_error": "模型端点返回了错误响应。",
 }
 
+# 单轮时限、上游限流与模型调用超时的诚实说明（见 specs/generation-execution-control/spec.md）：
+# 三类情形都落在既有错误码内，靠消息说清事实，不新增第四类码（见 design.md 决策 5）
+TIMEOUT_MESSAGE = (
+    "本轮生成已超过 {seconds} 秒被主动中止。可点击重试，或把需求拆小一些再试。"
+)
+RATE_LIMIT_MESSAGE = "模型端点触发了限流（请求过于频繁或额度已用尽），请稍后重试。"
+NETWORK_TIMEOUT_MESSAGE = "调用模型端点超时，请检查本机网络或代理设置后重试。"
+
 _AUTH_STATUS_CODES = {401, 403}
 _AUTH_MARKERS = (
     "authenticationerror",
@@ -57,6 +67,18 @@ _AUTH_MARKERS = (
     "unauthorized",
     "invalid_api_key",
 )
+# 上游限流：HTTP 429 与各家的限流措辞（OpenAI / 智谱 / 火山 / Google 口径）
+_RATE_LIMIT_MARKERS = (
+    "rate limit",
+    "rate_limit",
+    "ratelimit",
+    "too many requests",
+    "throttl",
+    "quota exceeded",
+    "resource exhausted",
+)
+# 模型调用超时：必须早于 _NETWORK_MARKERS 判定，后者也含 timeout 字样
+_TIMEOUT_MARKERS = ("timeout", "timed out", "deadline exceeded")
 _NETWORK_MARKERS = (
     "connection",
     "timeout",
@@ -161,17 +183,25 @@ def events_to_messages(session) -> list[dict]:
 def classify_failure(
     status: int | None, name: str, detail: str
 ) -> tuple[str, str]:
-    """把失败信息归类为可诊断的错误码与说明，区分鉴权失败与网络不可达。"""
+    """把失败信息归类为可诊断的错误码与说明，区分鉴权失败与网络不可达。
+
+    上游限流与模型调用超时都落在既有三类码内，只把消息写具体（见 design.md 决策 5）。
+    超时判定必须早于网络判定，因为网络措辞表里同样含 timeout 字样。
+    """
     haystack = f"{name} {detail}".lower()
 
     if status in _AUTH_STATUS_CODES or any(m in haystack for m in _AUTH_MARKERS):
-        code = "auth_error"
+        code, base = "auth_error", ERROR_MESSAGES["auth_error"]
+    elif status == 429 or any(m in haystack for m in _RATE_LIMIT_MARKERS):
+        code, base = "upstream_error", RATE_LIMIT_MESSAGE
+    elif any(m in haystack for m in _TIMEOUT_MARKERS):
+        code, base = "network_error", NETWORK_TIMEOUT_MESSAGE
     elif any(m in haystack for m in _NETWORK_MARKERS):
-        code = "network_error"
+        code, base = "network_error", ERROR_MESSAGES["network_error"]
     else:
-        code = "upstream_error"
+        code, base = "upstream_error", ERROR_MESSAGES["upstream_error"]
 
-    return code, f"{ERROR_MESSAGES[code]}（原始信息：{detail}）"
+    return code, f"{base}（原始信息：{detail}）"
 
 
 def classify_error(exc: BaseException) -> tuple[str, str]:
@@ -321,18 +351,40 @@ async def stream_frames(
     user_id: str,
     session_id: str,
     message: str,
+    settings: Settings | None = None,
 ) -> AsyncIterator[Frame]:
-    """驱动一次流式对话，产出 text / error / done 帧。"""
+    """驱动一次流式对话，产出 text / error / done 帧。
+
+    整轮生成受 settings.chat_timeout_seconds 时限约束（见 design.md 决策 1）：
+    超时即中止本轮，产出可重试的 error 帧后照常给出 done 帧让前端收尾——此时**不产出**
+    完整帧，避免把半截内容当成完整回复。客户端主动断开（CancelledError）时不回帧，直接结束
+    （连接已断，回帧无意义，见 design.md 决策 2）。
+    """
+    settings = settings or get_settings()
+    limit = settings.chat_timeout_seconds
     builder = FrameBuilder(session_id)
     try:
-        async for event in runner.run_async(
-            user_id=user_id,
-            session_id=session_id,
-            new_message=build_user_content(message),
-            run_config=STREAM_RUN_CONFIG,
-        ):
-            for frame in builder.consume(event):
-                yield frame
+        async with asyncio.timeout(limit):
+            async for event in runner.run_async(
+                user_id=user_id,
+                session_id=session_id,
+                new_message=build_user_content(message),
+                run_config=STREAM_RUN_CONFIG,
+            ):
+                for frame in builder.consume(event):
+                    yield frame
+    except TimeoutError:
+        yield ErrorFrame(
+            data=ErrorData(
+                code="upstream_error",
+                message=TIMEOUT_MESSAGE.format(seconds=limit),
+            )
+        )
+        yield builder.done()
+        return
+    except asyncio.CancelledError:
+        # 客户端断开触发的取消：继续向外抛，交给上层结束响应
+        raise
     except Exception as exc:  # noqa: BLE001 - 需要把任意上游异常转成可诊断的 error 帧
         # ADK 可能已经用错误事件上报过同一次失败，避免重复提示
         if not builder.error_emitted:
