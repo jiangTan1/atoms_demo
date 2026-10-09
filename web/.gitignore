@@ -1,0 +1,2 @@
+# 前端依赖安装目录不进入版本库；构建产物 dist/ 需提交（部署侧无 Node，见 design.md 决策 2）
+node_modules/

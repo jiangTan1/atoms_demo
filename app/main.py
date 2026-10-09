@@ -1,6 +1,9 @@
 """应用装配入口。
 
-注册路由、管理 Runner 生命周期、托管 web/ 静态前端。
+注册路由、管理 Runner 生命周期、托管前端构建产物（web/dist）。
+
+前端源码位于 web/src，由 Vite 构建产出到 web/dist 并随仓库交付；服务只托管产物目录，
+启动前校验产物入口文件是否存在，缺失时直接启动失败而不是运行期白屏（见 design.md 决策 7）。
 
 uvicorn 入口：app.main:app
 """
@@ -26,7 +29,21 @@ from app.services.accounts import AccountService
 from app.services.runner import RunnerService
 from app.services.shares import ShareService
 
-WEB_DIR = Path(__file__).resolve().parent.parent / "web"
+WEB_DIR = Path(__file__).resolve().parent.parent / "web" / "dist"
+
+
+def ensure_web_build() -> None:
+    """启动前校验前端构建产物入口文件存在；缺失则启动失败并给出可修复的中文提示。
+
+    宁可在这里明确失败，也不要在运行期以「页面空白」的方式暴露产物缺失。
+    """
+    entry = WEB_DIR / "index.html"
+    if not entry.is_file():
+        raise RuntimeError(
+            f"前端构建产物缺失：未找到 {entry}。"
+            "请先在 web/ 目录执行 `npm install && npm run build` 生成产物，"
+            "或拉取仓库中最新的 web/dist/ 目录后再启动服务。"
+        )
 
 
 @asynccontextmanager
@@ -51,6 +68,9 @@ async def lifespan(app: FastAPI):
 
 
 def create_app() -> FastAPI:
+    # 前端产物缺失时在此直接抛出，使服务启动失败而不是提供空白页面
+    ensure_web_build()
+
     app = FastAPI(title="代码辅助智能体", lifespan=lifespan)
     app.state.settings = get_settings()
 

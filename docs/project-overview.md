@@ -13,7 +13,7 @@
 
 访问服务需先**注册或登录**：未登录只能停在认证界面，登录后各人的会话、沙箱与版本互相隔离，归属由登录态决定、客户端无法指定或伪造。生成的网页应用通过客户端沙箱（限制能力的 iframe）运行，服务端不执行应用代码。
 
-技术栈：Python 3.12 + Google ADK 2.10.0 + LiteLLM + FastAPI + 原生 HTML/JS（无前端构建）。
+技术栈：Python 3.12 + Google ADK 2.10.0 + LiteLLM + FastAPI；助手自身界面为 React 18 + TypeScript + Ant Design 5，由 Vite 构建（源码 `web/src/`，产物 `web/dist/`）。
 
 ## 2. 架构与数据流转
 
@@ -41,7 +41,7 @@
   接口层收尾：本轮无 error 帧时比对沙箱指纹，有变化则留一个版本快照（失败不影响已完成的对话流）
 浏览器：逐帧渲染（打字机 + 「正在生成第 N 行 · 已用 M 秒」进度）→ 结束后用完整帧兜底 → 渲染 Markdown/高亮/代码块按钮
 浏览器：失败（超时 / 限流 / 网络 / 中断）→ 失败提示 + 「重试」原样重发；生成中可点「中断」断开本轮
-浏览器：顶栏「示例应用」--GET /api/examples--> 列表；--POST /api/examples/apply--> 新会话 + 模板写入沙箱（免生成即预览）
+浏览器：侧边栏「示例应用」--GET /api/examples--> 列表；--POST /api/examples/apply--> 新会话 + 模板写入沙箱（免生成即预览）
 浏览器：预览区 --GET /api/sessions/{会话}/preview-token--> 校验归属后签发票据
 浏览器：刷新预览区 --GET /preview/{会话}/{票据}/--> 沙箱入口页（iframe 不透明源隔离）
 ```
@@ -112,16 +112,19 @@
 - `function_call` / `function_response` 部件没有 `.text`，会被文本提取天然跳过 → **工具调用不会在历史里留下多余消息**，也不干扰澄清轮次计数。
 - 沙箱里写文件**不代表**写了正确的应用：本版仍不做内容校验（见 §4.2）——但预览把「写得好不好」立刻暴露给使用者，比「只下载到本地才知道」的反馈环路短得多。
 
-### 3.6 前端：左对话右预览、零构建、可降级
+### 3.6 前端：组件化工程 + 侧边栏后台布局
 
-- 原生 HTML/JS，无打包工具；通过 cdnjs 引入 `marked` / `highlight.js` / `DOMPurify`。
-- **布局**：`.workspace` 是「左侧对话 + 右侧应用预览」的横向两栏（46% / 54%），窄屏（≤640px）改为上下排布，避免左右并排被挤压溢出。
-- **预览面板**：`iframe` + 「刷新」按钮 + 状态提示。刷新时**先探一次入口页状态码**，据此分流：401 → 交给 401 集中处理；404 → 展示服务端给的中文 `detail`（区分「空沙箱」与「有文件但无入口」）并置状态为「尚无应用」；其它非 2xx → 「加载失败（HTTP xxx）」；2xx → 把 `iframe.src` 指向入口页（带时间戳参数强制重载）。
-- **版本与分享弹层**：复用既有 `.modal` 形态。版本弹层倒序展示版本、确认后回滚（回滚成功重取预览与列表）；分享弹层选版本生成链接（成功后自动复制）、列出自己已创建的分享、可复制与撤销。
-- **降级策略**：任一 CDN 不可达时，页面自动退化为纯文本展示，对话与复制仍可用，**不白屏**。
-- 代码块上「复制」与「另存为」并排；另存为按语言决定扩展名，同轮同名自动加序号。
+助手自身的界面是 **React 18 + TypeScript + Ant Design 5** 工程，由 **Vite** 构建：源码在 `web/src/`，产物在 `web/dist/`（随仓库提交，由服务托管）。原先「零构建 + 手写令牌 + 单文件 1400 行 `app.js`」的做法已被整体替换（见变更 `rewrite-assistant-ui-with-react-antd`）。
+
+- **构建与托管分离**：`web/src/` 是源码目录、服务**不**直接托管；服务只托管 `web/dist/`，并在启动时校验 `dist/index.html` 是否存在——缺失则**启动失败**并提示需执行的构建命令，不以「页面空白」暴露。部署侧因此无需安装前端工具链（仍是「拉取代码 + 重启服务」）。`web/node_modules/` 被忽略、`web/dist/` **不**忽略。
+- **布局**：侧边栏主导的后台形态。侧边栏承载新建会话、历史会话（倒序、上限 50 条）、示例应用、版本、分享、下载整个项目与账号操作（当前用户 / 修改密码 / 退出登录）；顶栏保留品牌、**当前会话 ID（始终可见）**与主题切换；主区是「对话 + 应用预览」两栏。窄屏（≤991px）侧边栏收起为抽屉，两栏自适应堆叠。
+- **设计令牌**：由 `ConfigProvider` 的 `theme.token` 与 `theme.algorithm` 一处下发品牌色、圆角、字号层级与间距，antd 组件与浮层（下拉、弹层、抽屉、提示）统一遵循，界面文案为中文（`locale` 为 `zh_CN`）。
+- **主题三态**：`auto` / `light` / `dark`，选择记在 `localStorage["code-assistant.theme"]`；`auto` 时监听系统偏好。首屏由 `web/index.html` 内联脚本提前在 `documentElement` 打 `data-theme` 并设置底色，**不闪白**。代码高亮（highlight.js）的浅色/深色样式随主题切换。
+- **渲染与降级**：`marked` → `DOMPurify` → 注入，收口在唯一的 `MarkdownView`；代码块的「复制 / 另存为」操作条在渲染后由 DOM 遍历 `pre > code` 挂载（不写进 HTML 字符串，避免用户内容伪造按钮）。三个渲染库都是**构建期依赖、随产物打包，无运行时 CDN**；渲染环节出错时该条回复退化为纯文本，样式与主题仍生效，**不白屏**。
+- **预览面板**：`iframe`（`sandbox` 不授予 `allow-same-origin`）+ 「刷新」按钮 + 状态提示；刷新时**先取预览票据**（`GET /api/sessions/{id}/preview-token`），再以 `/preview/<会话>/<票据>/` 加载入口页，404 时展示服务端给的中文 `detail`（区分「空沙箱」与「有文件但无入口」）。
+- **流式交互**：`/api/chat` 的 SSE 增量渲染 + 完整帧兜底；执行进度「正在生成第 N 行 · 已用 M 秒」（未收到文本时为「正在等待模型响应 · 已用 M 秒」，约 500ms 刷新）；`AbortController` 中断；失败给中文说明与「重试」（原样重发同一轮，主动中断不给重试）；401 集中处理切回认证界面。
+- **开发态同源联调**：`npm run dev` 由 Vite 把 `/api`、`/preview`、`/share` 代理到 `127.0.0.1:80`，与生产路径完全一致，无跨域配置。
 - 安全：Markdown 渲染结果统一经 `DOMPurify` 清洗后再注入；预览 `iframe` 与主站之间靠 `sandbox`（不给 `allow-same-origin`）隔离，详见 §4.3「已知限制」。
-- **设计令牌与暗色**：`styles.css` 顶部用一组 CSS 变量统一间距（8px 基准）、圆角、字号层级、配色与阴影；暗色令牌写两份（`html[data-theme="dark"]` 与 `@media (prefers-color-scheme: dark)`）以同时支持手动切换与跟随系统。预览画布固定白底，不随界面主题变暗（生成的应用是浅色自包含页面）。
 
 ### 3.7 部署取向：单机、反代、可开机自启
 
@@ -159,7 +162,7 @@
 | 示例应用 | 模板放版本库 `templates/examples/<id>/`，选用时**复制进新建会话的沙箱** | 复制后即可复用既有预览/版本/分享/下载/继续对话全链路，完全不走模型；放弃「前端静态展示示例」——那样就不能改、不能分享 |
 | 示例与惰性创建 | 选用示例是「新建会话惰性创建」的**唯一例外**，立即建会话并写沙箱；失败则回退（删会话 + 清沙箱） | 只有先落库并写好沙箱，「点开即预览」才成立；回退保证不出现「有会话但沙箱残缺」 |
 | 复杂需求 | 提示词要求「先出骨架、再增量填充」：先写 `index.html` 骨架，再逐个补 `style.css` / `app.js`，内容多则分批 | 避免一次性把整套应用塞给模型撞上单次生成长度上限，也让「生成中」的推进可见 |
-| 界面设计系统 | **零构建 + 自建设计令牌**（CSS 变量 + `prefers-color-scheme` / `html[data-theme]` 双层暗色） | 明确不引入 Tailwind / antd 与构建链，保持「原生 HTML/JS、无打包工具」的既有约束；令牌统一间距、圆角、字号层级、配色与阴影，只作用于**助手自身界面**，不强加给生成的应用 |
+| 界面设计系统 | **零构建 + 自建设计令牌**（CSS 变量 + `prefers-color-scheme` / `html[data-theme]` 双层暗色） | 该轮明确不引入 Tailwind / antd 与构建链。**已被后续变更 `rewrite-assistant-ui-with-react-antd` 取代**：界面迁移到 React + TypeScript + Ant Design 5（Vite 构建，令牌改由 `ConfigProvider` 下发），自建令牌方案整体移除 |
 | 代码高亮暗色 | 同时引入 `github` 与 `github-dark` 两份样式表，随主题切 `link.disabled` | 切换不重新下载，也不需改动 `highlight.js` 的调用方式 |
 
 ---
@@ -176,38 +179,39 @@
 | 模型可配置（环境变量切换，零改码） | ✅ | [config.py](../app/config.py)、[model.py](../app/agent/model.py) |
 | 配置缺失/非法时启动失败并点名配置项 | ✅ | [config.py](../app/config.py) |
 | 会话落盘（sqlite）+ 刷新/重启后恢复 | ✅ | [runner.py](../app/services/runner.py) |
-| 历史会话列表（倒序、上限 50 条）与切换 | ✅ | [api/sessions.py](../app/api/sessions.py)、[web/app.js](../web/app.js) |
+| 历史会话列表（倒序、上限 50 条）与切换 | ✅ | [api/sessions.py](../app/api/sessions.py)、[web/src](../web/src) |
 | 意图边界（领域外 / 法规风险 / 澄清追问 ≤5 次） | ✅ | `prompts/system.md` + [api/chat.py](../app/api/chat.py) |
-| 代码块：语言标识、高亮、复制、另存为 | ✅ | [web/app.js](../web/app.js) |
-| CDN 失败降级为纯文本 | ✅ | [web/app.js](../web/app.js) |
-| 页面显示当前会话 ID | ✅ | [web/index.html](../web/index.html) |
+| 代码块：语言标识、高亮、复制、另存为 | ✅ | [web/src](../web/src) |
+| 渲染环节出错时降级为纯文本（三个渲染库随构建产物打包，无运行时 CDN 依赖） | ✅ | [web/src](../web/src) |
+| 页面显示当前会话 ID | ✅ | [web/src](../web/src) |
 | 多对象对比优先用表格 | ✅（提示词约束） | `prompts/system.md` |
 | 会话沙箱 + 四个文件工具（写/读/列/删） | ✅ | [agent/tools.py](../app/agent/tools.py)、[services/workspace.py](../app/services/workspace.py) |
 | 路径逃逸防护（绝对路径 / `..` / 符号链接） | ✅ | [services/workspace.py](../app/services/workspace.py) |
 | 三项配额（单文件 / 文件数 / 总量） | ✅ | [config.py](../app/config.py) |
-| 打包下载接口 + 「下载整个项目」按钮 | ✅ | [api/workspace.py](../app/api/workspace.py)、[web/app.js](../web/app.js) |
-| 应用预览（沙箱当静态站点直出 + 对话区右侧 iframe 面板） | ✅ | [api/preview.py](../app/api/preview.py)、[web/app.js](../web/app.js) |
+| 打包下载接口 + 「下载整个项目」按钮 | ✅ | [api/workspace.py](../app/api/workspace.py)、[web/src](../web/src) |
+| 应用预览（沙箱当静态站点直出 + 对话区右侧 iframe 面板） | ✅ | [api/preview.py](../app/api/preview.py)、[web/src](../web/src) |
 | 每轮自动快照（指纹比对，无改动不留档） | ✅ | [services/versions.py](../app/services/versions.py)、[api/chat.py](../app/api/chat.py) |
-| 版本列表与可逆回滚（回滚前先留存当前内容） | ✅ | [api/versions.py](../app/api/versions.py)、[web/app.js](../web/app.js) |
+| 版本列表与可逆回滚（回滚前先留存当前内容） | ✅ | [api/versions.py](../app/api/versions.py)、[web/src](../web/src) |
 | 公开只读分享（版本快照 + 免登录外壳页与资源路由） | ✅ | [services/shares.py](../app/services/shares.py)、[api/shares.py](../app/api/shares.py) |
-| 认证门控（未登录停在认证界面，登录后进入对话） | ✅ | [api/auth.py](../app/api/auth.py)、[web/app.js](../web/app.js) |
+| 认证门控（未登录停在认证界面，登录后进入对话） | ✅ | [api/auth.py](../app/api/auth.py)、[web/src](../web/src) |
 | 账号库与首个管理员（`data/users.db`，首次启动且库为空时由 `ADMIN_USERNAME`/`ADMIN_PASSWORD` 创建，`source=system`） | ✅ | [services/accounts.py](../app/services/accounts.py) |
 | 注册 / 登录 / 退出登录（3–20 字符，自助注册上限 99） | ✅ | [services/accounts.py](../app/services/accounts.py)、[api/auth.py](../app/api/auth.py) |
 | 登录态用 HttpOnly 令牌 Cookie（1 天有效，可选 `Secure`） | ✅ | [api/auth.py](../app/api/auth.py)、[config.py](../app/config.py) |
 | 密码加盐哈希与定时安全校验（pbkdf2 + `compare_digest`） | ✅ | [services/accounts.py](../app/services/accounts.py) |
-| 修改自己的密码（顶栏弹层，成功后吊销其他登录态） | ✅ | [api/auth.py](../app/api/auth.py)、[web/app.js](../web/app.js) |
+| 修改自己的密码（顶栏弹层，成功后吊销其他登录态） | ✅ | [api/auth.py](../app/api/auth.py)、[web/src](../web/src) |
 | 管理员增删改用户（新增 / 重置密码 / 删除，禁删内置管理员） | ✅ | [api/auth.py](../app/api/auth.py) |
 | 会话与沙箱按登录用户隔离（`user:<用户名>` 归属） | ✅ | [api/sessions.py](../app/api/sessions.py)、[api/chat.py](../app/api/chat.py)、[api/workspace.py](../app/api/workspace.py) |
-| 401 集中处理（对话 / 列表 / 历史 / 下载 / 预览 / 版本 / 分享切回认证界面） | ✅ | [web/app.js](../web/app.js) |
+| 401 集中处理（对话 / 列表 / 历史 / 下载 / 预览 / 版本 / 分享切回认证界面） | ✅ | [web/src](../web/src) |
 | 单轮生成时限（`CHAT_TIMEOUT_SECONDS`，默认 240s；超时中止并给可重试提示） | ✅ | [chat.py](../app/services/chat.py)、[config.py](../app/config.py) |
-| 执行进度提示（正在生成第 N 行 · 已用 M 秒）与主动中断按钮 | ✅ | [web/app.js](../web/app.js)、[web/index.html](../web/index.html) |
-| 失败重试（超时 / 限流 / 网络 / 中断：原样重发同一轮） | ✅ | [web/app.js](../web/app.js) |
+| 执行进度提示（正在生成第 N 行 · 已用 M 秒）与主动中断按钮 | ✅ | [web/src](../web/src) |
+| 失败重试（超时 / 限流 / 网络 / 中断：原样重发同一轮） | ✅ | [web/src](../web/src) |
 | 上游限流与模型调用超时的诚实归类 | ✅ | [chat.py](../app/services/chat.py) 的 `classify_failure()` |
 | 超时/中断轮次不留版本（仅无 error 帧的轮次比对指纹留档） | ✅ | [api/chat.py](../app/api/chat.py) |
 | 内置示例应用（4 个成品模板，选用即建会话并写入沙箱，免生成即预览） | ✅ | [services/examples.py](../app/services/examples.py)、[api/examples.py](../app/api/examples.py)、`templates/examples/` |
 | 从模板初始化沙箱（配额预检 + 失败清理，只作用于目标会话） | ✅ | [services/workspace.py](../app/services/workspace.py) 的 `init_from_template()` |
 | 分段生成规范（先出骨架、再增量填充）与生成应用的完整外壳约定 | ✅（提示词约束） | `prompts/system.md` |
-| 界面设计令牌 + 明暗主题（自动 / 浅色 / 深色，含代码高亮联动） | ✅ | [web/styles.css](../web/styles.css)、[web/app.js](../web/app.js) |
+| 界面设计令牌 + 明暗主题（自动 / 浅色 / 深色，含代码高亮联动） | ✅ | [web/src](../web/src) |
+| 助手界面工程化迁移（React 18 + TS + Ant Design 5 + Vite；源码 `web/src`、产物 `web/dist`、启动校验产物存在性、侧边栏后台布局） | ✅ | [web/src](../web/src)、[app/main.py](../app/main.py) |
 | 部署样例（Nginx + systemd，含对话与分享两处按来源 IP 限流） | ✅ | `deploy/` |
 | 单元测试 | ✅ 295 项全通过 | `tests/` |
 
@@ -216,6 +220,8 @@
 认证相关也已实机验收：未登录访问停在认证界面、注册/登录/退出主流程、顶栏显示当前用户名；连注册至第 99 个普通用户确认上限生效、管理员新增用户不占名额；账号库为空且未配置 `ADMIN_*` 时启动失败并点名 `ADMIN_USERNAME`，配置后首次启动即创建首个管理员，用该凭据调用管理员接口新增/重置/删除用户、普通用户调用被拒、删除内置管理员被拒；改密后其他登录态失效而当前处仍有效；两用户各自的会话列表与打包下载互相不可见（以对方会话标识查询按不存在处理）。
 
 预览、版本与分享也已实机验收：让智能体生成一个俄罗斯方块应用，预览区可加载样式与脚本、应用内方向键可移动与旋转；再改一版即多出一个版本，分享内容锁定在被分享的那一版不随后续改动漂移；回滚到旧版后预览回到旧版、版本条目不减（回滚前内容被留存为新版本）、且可再次回到回滚前那一版；官方分享链接在**未登录**浏览器中可打开并运行、看不到会话标识与版本号、也无法访问打包下载与会话接口，撤销后原链接与资源随即 404。预览与分享的 iframe 实测为不透明源：访问者无法读取 `document.cookie` 与 `localStorage`（抛 `SecurityError`）。
+
+前端工程化迁移（`rewrite-assistant-ui-with-react-antd`）也已在真实浏览器中验收：认证界面停在未登录态且「修改密码」仅给提示不弹窗；登录后侧边栏入口齐全、顶栏会话 ID 常驻；主题三态切换正常、深色下浮层与代码高亮协调、刷新后仍保持深色且**首屏不闪白**；发送消息后有打字机增量与「正在生成第 N 行 / 正在等待模型响应 · 已用 M 秒」进度，中断给出「本轮未完成」反馈且可再次发送；代码块经 DOM 查询确认挂有 `["复制","另存为"]` 两个按钮（`.code-head button`）；示例应用选择后切到新会话并**即刻**呈现预览；整项目下载提示「已下载当前会话生成的全部文件」；窄屏（约 430px）侧边栏收起为抽屉且入口齐全、主区无横向溢出；控制台除浏览器挂起造成的网络中断外无 JS 异常。同时实测：`web/dist` 缺失时服务启动失败并给出中文修复提示；`/api/*`、`/preview/*`、`/share/*` 未被静态挂载劫持（分别返回 401 / 403 / 404）；`npm run dev` 的代理与生产路径一致。
 
 ### 4.2 明确不做（有意为之的能力边界）
 
@@ -249,7 +255,7 @@
 - `glm-4.5-flash` 偶发以英文作答、或在开头复述任务。
 - 澄清追问依赖模型在回复首个内容位输出 `[[CLARIFY]]`：未输出则该轮不计次、上限不推进；**若标记出现在非首位**（例如模型先复述一行任务再提问），则标记会显示在页面上且该轮不被计为追问——这是模型侧偏差，非服务端逻辑问题。
 - 领域外与法规风险边界由提示词约束，属模型判断而非关键词过滤，个例可能超出预期。
-- 前端依赖 cdnjs；离线需自行 vendor 三个库（注意 jsdelivr 在部分网络下不可达）。
+- **前端构建产物与源码可能不同步**：服务托管的是随仓库提交的 `web/dist/`。只改 `web/src/` 而未 `npm run build` 并提交产物，界面不会更新；仓库里 `web/dist/` 缺失或入口文件不存在时服务**拒绝启动**并提示需执行的构建命令。三个渲染库（marked / DOMPurify / highlight.js）已是构建期依赖、随产物打包，**不再依赖任何运行时 CDN**。
 - **顶层直达预览/分享的应用地址会绕过 iframe 沙箱**：`/preview/<会话>/<票据>/` 与 `/share/<token>/app/` 被 iframe 嵌入时处在不透明源（脚本读不到 `document.cookie` 与 `localStorage`，已实测），但直接在地址栏打开时文档落在主站源上，只剩 CSP 的 `connect-src 'none'` 在挡「联网」。根因是预览仍挂在主站同源路由上，彻底解决要迁到独立源（见 §5 第 11 项）。
 - **预览票据放在路径里，而不是靠登录态 Cookie**：不透明源 iframe 自己发出的子资源请求被浏览器视为跨站，`SameSite=Lax` 的登录 Cookie 不跟随，会得到 401 并被 Chrome 的 ORB（`net::ERR_BLOCKED_BY_ORB`）拦掉，使预览里样式与脚本全部失效（表现为「界面看得见、点不动」）。故预览入口为 `/preview/<会话>/<票据>/`：相对路径自动继承同前缀票据，子资源无需 Cookie。票据由 `app/services/preview_token.py` 以 HMAC 签发，绑定会话、默认 1 小时有效，只能由已登录且会话归属本人的使用者通过 `GET /api/sessions/{session_id}/preview-token` 换取。
 - 未标注语言的代码块只做等宽展示，不做高亮猜测。
@@ -258,7 +264,7 @@
 
 ### 4.4 工程状态上的「未完成」
 
-- **OpenSpec 变更尚未归档**：`openspec/changes/` 下现有 6 个变更（`add-code-assistant-agent`、`add-session-history-and-bug-finding`、`add-scope-guardrails-and-output-rules`、`add-workspace-file-tools`、`add-user-authentication`、`add-web-app-builder`）都是活动变更，`openspec/specs/` 仍为空。规范沉淀在 `changes/` 里，未同步为「当前系统规范」。按 OpenSpec 流程，功能验证通过后应 `sync` 并 `archive`。
+- **OpenSpec 变更尚未归档**：`openspec/changes/` 下现有多个活动变更（`add-code-assistant-agent`、`add-session-history-and-bug-finding`、`add-scope-guardrails-and-output-rules`、`add-workspace-file-tools`、`add-user-authentication`、`add-web-app-builder`、`improve-generation-ux`、`rewrite-assistant-ui-with-react-antd`）都是活动变更，`openspec/specs/` 仍为空。规范沉淀在 `changes/` 里，未同步为「当前系统规范」。按 OpenSpec 流程，功能验证通过后应 `sync` 并 `archive`。
 - **部署未留下实机验证记录**：`deploy/nginx.conf`、`deploy/code-assistant.service` 与 README 的部署步骤已提供，但仓库里没有「在云服务器上跑通」的记录（HTTPS 证书路径、`www-data` 权限、安全组与备案等步骤是否已执行无从判断）。若已实际部署，建议在此补一条实测结论。
 
 ---
@@ -310,8 +316,8 @@
 9. **长对话与长代码的渲染性能**：折叠代码块、虚拟滚动、增量渲染节流。
 10. **可观测性与成本**：按会话统计 token 与请求量、结构化日志、错误率告警。
 11. **预览与分享迁到独立源（子域或独立端口）**：本版预览/分享仍挂在主站同源路由上，iframe 嵌入时靠 `sandbox`（不给 `allow-same-origin`）隔离成不透明源，但**直接在地址栏打开应用地址会绕过 iframe、落在主站源上**（见 §4.3）。把预览迁到独立源后，顶层直达也不再与主站同源，这是消除该残余风险的正解；代价是部署要多一个域名/端口与证书。
-12. **离线可用**：把三个 CDN 库 vendor 到 `web/vendor/`。
-13. **OpenSpec 归档**：把已验证的 6 个变更 `sync` 进 `openspec/specs/` 并归档，让规范从「变更记录」变成「当前系统规范」。
+12. ~~离线可用：把三个 CDN 库 vendor 到 `web/vendor/`。~~ **已完成**：界面迁移为 Vite 构建后，`marked` / `DOMPurify` / `highlight.js` 已是构建期依赖、随 `web/dist/` 打包，页面不再依赖任何运行时 CDN。
+13. **OpenSpec 归档**：把已验证的变更 `sync` 进 `openspec/specs/` 并归档，让规范从「变更记录」变成「当前系统规范」。
 
 ### 建议的推进顺序
 

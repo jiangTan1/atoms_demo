@@ -11,3 +11,6 @@ venv/
 
 # 本地会话数据
 data/
+
+# 前端依赖安装目录（web/dist 构建产物需要提交，见 web/.gitignore）
+web/node_modules/
